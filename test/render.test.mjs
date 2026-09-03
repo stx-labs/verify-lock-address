@@ -30,7 +30,7 @@ test('every element the code reaches for exists in index.html', () => {
 test('index.html loads the built bundle and the vendored tokens', () => {
   assert.match(html, /<script type="module" src="app\.js"><\/script>/);
   assert.match(html, /assets\/tokens\.css/);
-  // The bundle is committed alongside the page: GitHub Pages serves static files only.
+  // Built by `npm run build`, which CI runs before the suite — the page loads this file.
   assert.ok(readFileSync(fileURLToPath(new URL('web/app.js', root)), 'utf8').length > 1000);
 });
 

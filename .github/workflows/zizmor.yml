@@ -1,0 +1,41 @@
+# Static analysis of the workflows themselves.
+#
+# The permissions bug this caught on first run — pages: write and id-token: write
+# granted workflow-wide, so the job running `npm ci` held them too — is exactly the
+# kind of thing that is invisible in review. Running it here stops it coming back.
+#
+# zizmor's version is pinned alongside the action SHA: the action defaults to
+# `latest`, which would let a new release change CI's verdict with no change here.
+
+name: Audit workflows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Unlike the deploy, a superseded audit is worth nothing — cancel it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # upload SARIF to the Security tab
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: zizmorcore/zizmor-action@70fb788f84895a7701f5643d103d587e460b5c99 # v0.6.3
+        with:
+          version: 1.30.0
+          persona: pedantic
