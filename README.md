@@ -21,7 +21,7 @@ Supported networks: **private-1** (regtest, `bcrt1…`) and **mainnet** (`bc1…
 
 ```bash
 npm ci
-npm run dev      # static server at http://localhost:8123
+npm run dev      # requires python3; static server at http://localhost:8123
 npm run build    # bundle web/src → web/app.js
 npm test
 ```
