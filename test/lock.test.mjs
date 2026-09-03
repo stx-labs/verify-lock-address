@@ -10,8 +10,8 @@ import {
   sortKeysBip67,
   verify,
   wshOutputScript,
-} from '../web/src/lock.js';
-import { annotate, describeUnlockScript, disassemble, tokenText } from '../web/src/script-view.js';
+} from '../docs/src/lock.js';
+import { annotate, describeUnlockScript, disassemble, tokenText } from '../docs/src/script-view.js';
 
 // The worked example from the lock-address validation doc: a 1-of-2 multisig on
 // bond 106, private-1. Every published intermediate value is pinned here.
@@ -140,7 +140,7 @@ test('bond 106 on private-1 reproduces the documented address', async t => {
 });
 
 test('buildStakerUnlockBytes covers all three input shapes', async () => {
-  const { buildStakerUnlockBytes } = await import('../web/src/lock.js');
+  const { buildStakerUnlockBytes } = await import('../docs/src/lock.js');
 
   const single = buildStakerUnlockBytes({ mode: 'single', pubkey: KEY1 });
   assert.equal(bytesToHex(single.unlockBytes), `21${KEY1}ac`);
@@ -160,7 +160,7 @@ test('buildStakerUnlockBytes covers all three input shapes', async () => {
 });
 
 test('buildStakerUnlockBytes rejects the inputs that would cost money', async () => {
-  const { buildStakerUnlockBytes } = await import('../web/src/lock.js');
+  const { buildStakerUnlockBytes } = await import('../docs/src/lock.js');
 
   assert.throws(() => buildStakerUnlockBytes({ mode: 'single', pubkey: '' }), /Enter the 33-byte/);
   assert.throws(() => buildStakerUnlockBytes({ mode: 'single', pubkey: 'deadbeef' }), /66 hex characters/);
@@ -202,7 +202,7 @@ const BTC_ONLY = [
 ];
 
 test('a BTC-only reply fills the key and reports the missing principal', async () => {
-  const { pickWalletAddresses } = await import('../web/src/lock.js');
+  const { pickWalletAddresses } = await import('../docs/src/lock.js');
   const p = pickWalletAddresses(BTC_ONLY);
 
   assert.equal(p.stxAddress, '');
@@ -216,7 +216,7 @@ test('a BTC-only reply fills the key and reports the missing principal', async (
 });
 
 test('an STX-only reply fills the principal and reports the missing key', async () => {
-  const { pickWalletAddresses } = await import('../web/src/lock.js');
+  const { pickWalletAddresses } = await import('../docs/src/lock.js');
   const p = pickWalletAddresses([{ symbol: 'STX', address: STX }]);
 
   assert.equal(p.stxAddress, STX);
@@ -226,7 +226,7 @@ test('an STX-only reply fills the principal and reports the missing key', async 
 });
 
 test('a full reply fills both and reads the network off the principal', async () => {
-  const { pickWalletAddresses } = await import('../web/src/lock.js');
+  const { pickWalletAddresses } = await import('../docs/src/lock.js');
 
   const regtest = pickWalletAddresses([{ symbol: 'STX', address: STX }, ...BTC_ONLY]);
   assert.equal(regtest.stxAddress, STX);
@@ -242,7 +242,7 @@ test('a full reply fills both and reads the network off the principal', async ()
 });
 
 test('a taproot-only reply is flagged rather than silently used', async () => {
-  const { pickWalletAddresses } = await import('../web/src/lock.js');
+  const { pickWalletAddresses } = await import('../docs/src/lock.js');
   const p = pickWalletAddresses([BTC_ONLY[1]]);
 
   assert.equal(p.taprootOnly, true);
@@ -251,7 +251,7 @@ test('a taproot-only reply is flagged rather than silently used', async () => {
 });
 
 test('pickWalletAddresses survives junk and older reply shapes', async () => {
-  const { pickWalletAddresses } = await import('../web/src/lock.js');
+  const { pickWalletAddresses } = await import('../docs/src/lock.js');
 
   assert.deepEqual(pickWalletAddresses([]).missing, ['stx', 'btc']);
   assert.deepEqual(pickWalletAddresses(undefined).missing, ['stx', 'btc']);

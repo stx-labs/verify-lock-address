@@ -2,4 +2,4 @@ node_modules/
 .tmp/
 *.log
 .DS_Store
-web/*.map
+docs/*.map
