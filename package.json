@@ -5,9 +5,9 @@
   "main": "index.js",
   "scripts": {
     "test": "node --test 'test/*.test.mjs'",
-    "build": "esbuild docs/src/app.js --bundle --format=esm --target=es2022 --minify --outfile=docs/app.js --define:process.env.NODE_ENV=\"'production'\"",
-    "dev": "python3 -m http.server 8123 --directory docs",
-    "build:test": "esbuild docs/src/app.js --bundle --format=iife --target=es2022 --outfile=.tmp/app.iife.js --define:process.env.NODE_ENV=\"'production'\""
+    "build": "esbuild web/src/app.js --bundle --format=esm --target=es2022 --minify --outfile=web/app.js --define:process.env.NODE_ENV=\"'production'\"",
+    "dev": "python3 -m http.server 8123 --directory web",
+    "build:test": "esbuild web/src/app.js --bundle --format=iife --target=es2022 --outfile=.tmp/app.iife.js --define:process.env.NODE_ENV=\"'production'\""
   },
   "keywords": [],
   "author": "",

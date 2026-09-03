@@ -2,4 +2,7 @@ node_modules/
 .tmp/
 *.log
 .DS_Store
-docs/*.map
+
+# Built by `npm run build`, and by CI on every deploy — not committed.
+web/app.js
+web/*.map
