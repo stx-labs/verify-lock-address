@@ -118,7 +118,7 @@ test('a full verification renders end to end', async t => {
 
   // Derive the expected address through the module, then drive the page to it —
   // this pins the wiring, while lock.test.mjs pins the module to the documented value.
-  const { verify } = await import('../web/src/lock.js');
+  const { verify } = await import('../web/src/lock.ts');
   const { buildUnlockScript } = await import('@stacks/bitcoin-staking');
   const expected = await verify({
     network: 'private-1',

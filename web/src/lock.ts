@@ -1,7 +1,3 @@
-// Everything the verification needs that is not the DOM: network constants, the
-// unlock-script builders, P2WSH address derivation and the verify pipeline.
-// Kept free of `document` so the same code can be exercised from Node.
-
 import { bech32 } from '@scure/base';
 import { buildLockScript, buildUnlockScript, computeBondUnlockHeight, fetchPoxInfo } from '@stacks/bitcoin-staking';
 import { bytesToHex, hexToBytes } from '@stacks/common';
@@ -9,12 +5,42 @@ import { STACKS_MAINNET, STACKS_TESTNET } from '@stacks/network';
 import { Cl, cvToValue, fetchCallReadOnlyFunction } from '@stacks/transactions';
 import { sha256 } from '@noble/hashes/sha2.js';
 
-import { describeUnlockScript } from './script-view.js';
+import { describeUnlockScript } from './script-view.ts';
+import type { Alternate, Comparison, Network, NetworkName, VerifyInput, VerifyResult } from './types.ts';
 
-// The two chains this tool is pointed at. Everything network-shaped lives here:
-// mixing an API with the wrong HRP or boot address silently produces a valid
-// address for a chain nobody is funding.
-export const NETWORKS = {
+export interface UnlockForm {
+  mode: string;
+  pubkey?: string;
+  keys?: string[];
+  threshold?: string | number;
+  sorted?: boolean;
+  rawHex?: string;
+}
+
+export interface StakerUnlock {
+  unlockBytes: Uint8Array;
+  altUnlockBytes: Uint8Array | null;
+  altLabel: string;
+}
+
+interface WalletEntry {
+  symbol?: string;
+  address?: string;
+  type?: string;
+  publicKey?: string;
+}
+
+export interface WalletAddresses {
+  stxAddress: string;
+  btcPublicKey: string;
+  btcAddress: string;
+  btcType: string;
+  taprootOnly: boolean;
+  missing: ('stx' | 'btc')[];
+  networkGuess: NetworkName | null;
+}
+
+export const NETWORKS: Record<NetworkName, Network> = {
   'private-1': {
     label: 'private-1',
     api: 'https://api.private-1.hiro.so',
@@ -38,10 +64,9 @@ export const NETWORKS = {
 export const PUBKEY_RE = /^(0x)?0[23][0-9a-fA-F]{64}$/;
 export const HEX_RE = /^(0x)?[0-9a-fA-F]*$/;
 
-export const clean = s => (s || '').trim().replace(/^0x/i, '');
+export const clean = (s: string | null | undefined) => (s || '').trim().replace(/^0x/i, '');
 
-/** `OP_m <33-byte key>… OP_n OP_CHECKMULTISIG`, the tail a Bitcoin vault spends with. */
-export function buildMultisigUnlockScript(pubkeys, threshold) {
+export function buildMultisigUnlockScript(pubkeys: string[], threshold: number): Uint8Array {
   if (pubkeys.length < 1 || pubkeys.length > 16) {
     throw new Error(`multisig needs between 1 and 16 keys, got ${pubkeys.length}`);
   }
@@ -49,7 +74,7 @@ export function buildMultisigUnlockScript(pubkeys, threshold) {
     throw new Error(`threshold ${threshold} is out of range for ${pubkeys.length} key(s)`);
   }
 
-  const parts = [Uint8Array.of(0x50 + threshold)];
+  const parts: Uint8Array[] = [Uint8Array.of(0x50 + threshold)];
   for (const key of pubkeys) {
     const bytes = hexToBytes(clean(key));
     if (bytes.length !== 33) throw new Error(`expected a 33-byte compressed key, got ${bytes.length} bytes`);
@@ -69,14 +94,9 @@ export function buildMultisigUnlockScript(pubkeys, threshold) {
   return out;
 }
 
-/** BIP-67: `sortedmulti` orders the keys lexicographically by their compressed bytes. */
-export const sortKeysBip67 = keys => [...keys].map(clean).sort((a, b) => (a.toLowerCase() < b.toLowerCase() ? -1 : 1));
+export const sortKeysBip67 = (keys: string[]) => [...keys].map(clean).sort((a, b) => (a.toLowerCase() < b.toLowerCase() ? -1 : 1));
 
-/**
- * P2WSH address from the 34-byte output script. The HRP is ours to choose — the
- * script hex is chain-independent, which is why it is what the comparison runs on.
- */
-export function outputScriptToAddress(scriptHex, hrp) {
+export function outputScriptToAddress(scriptHex: string, hrp: string): string {
   const s = hexToBytes(clean(scriptHex));
   if (s.length !== 34 || s[0] !== 0x00 || s[1] !== 0x20) {
     throw new Error(`not a P2WSH output script: ${scriptHex}`);
@@ -84,19 +104,12 @@ export function outputScriptToAddress(scriptHex, hrp) {
   return bech32.encode(hrp, [0, ...bech32.toWords(s.slice(2))], 256);
 }
 
-export const wshOutputScript = lockScript => `0020${bytesToHex(sha256(lockScript))}`;
+export const wshOutputScript = (lockScript: Uint8Array) => `0020${bytesToHex(sha256(lockScript))}`;
 
-/**
- * Recompute the lock address for a bond and cross-check it against pox-5.
- *
- * Two independent constructions have to agree: `buildLockScript` locally, and
- * the contract's own `construct-lockup-output-script` for the same inputs. The
- * address is encoded from the contract's answer, since that is the authority.
- */
-export async function verify(input, progress = () => {}) {
+export async function verify(input: VerifyInput, progress: (message: string) => void = () => {}): Promise<VerifyResult> {
   const net = NETWORKS[input.network];
   const network = { ...net.stacks, client: { baseUrl: net.api } };
-  const notes = [];
+  const notes: string[] = [];
 
   const unlockBytes = input.unlockBytes;
   const tail = describeUnlockScript(unlockBytes);
@@ -120,14 +133,12 @@ export async function verify(input, progress = () => {}) {
   const earlyUnlockBytes = clean(bondValue.value['early-unlock-bytes'].value);
 
   progress('building the lock script…');
-  let lockScript;
+  let lockScript: Uint8Array;
   try {
     lockScript = buildLockScript({ stxAddress: input.stxAddress, unlockHeight, unlockBytes, earlyUnlockBytes });
   } catch (e) {
-    // The shape heuristic is advisory — the contract treats these bytes as opaque,
-    // so an exotic-but-valid bond template must still be verifiable here.
-    if (!/earlyUnlockBytes:/.test(String(e.message))) throw e;
-    notes.push(`The bond's early-unlock-bytes fail the SDK shape check (${e.message}). Continuing without it.`);
+    if (!/earlyUnlockBytes:/.test(String((e as Error).message))) throw e;
+    notes.push(`The bond's early-unlock-bytes fail the SDK shape check (${(e as Error).message}). Continuing without it.`);
     lockScript = buildLockScript({
       stxAddress: input.stxAddress,
       unlockHeight,
@@ -158,10 +169,7 @@ export async function verify(input, progress = () => {}) {
   const agree = sdkScript === contractScript;
   const address = outputScriptToAddress(contractScript, net.hrp);
 
-  // A multisig whose keys are in the other order is a different script and a
-  // different address. Offering the counterpart tells the staker which policy
-  // their wallet actually used, instead of leaving them to guess.
-  let alternate = null;
+  let alternate: Alternate | null = null;
   if (input.altUnlockBytes && bytesToHex(input.altUnlockBytes) !== bytesToHex(unlockBytes)) {
     try {
       const altLock = buildLockScript({
@@ -172,12 +180,10 @@ export async function verify(input, progress = () => {}) {
         validateEarlyUnlockBytes: false,
       });
       alternate = { label: input.altLabel, address: outputScriptToAddress(wshOutputScript(altLock), net.hrp) };
-    } catch {
-      /* the counterpart is a convenience; a failure here is not a verification failure */
-    }
+    } catch {}
   }
 
-  let comparison = null;
+  let comparison: Comparison | null = null;
   if (input.expected) {
     const want = clean(input.expected).toLowerCase();
     comparison = {
@@ -208,18 +214,7 @@ export async function verify(input, progress = () => {}) {
   };
 }
 
-/**
- * Turn the three input shapes into one `staker-unlock-bytes` script.
- *
- * Single-sig derives the SDK's default `<pubkey> OP_CHECKSIG` tail; multisig
- * assembles `OP_m <keys…> OP_n OP_CHECKMULTISIG`; raw is taken verbatim, which is
- * what a wallet that already built its own tail hands you.
- *
- * For multisig it also returns the counterpart key order. Order changes the
- * script and therefore the address, so showing both is how a staker discovers
- * which policy their wallet actually used.
- */
-export function buildStakerUnlockBytes(form) {
+export function buildStakerUnlockBytes(form: UnlockForm): StakerUnlock {
   if (form.mode === 'single') {
     const pk = clean(form.pubkey);
     if (!pk) throw new Error('Enter the 33-byte compressed Bitcoin public key, or connect Leather to fill it in.');
@@ -255,20 +250,10 @@ export function buildStakerUnlockBytes(form) {
   return { unlockBytes: hexToBytes(raw), altUnlockBytes: null, altLabel: '' };
 }
 
-/** Bitcoin address HRP -> the network this tool knows it as. */
-const HRP_NETWORK = { bc: 'mainnet', bcrt: 'private-1' };
+const HRP_NETWORK: Record<string, NetworkName | undefined> = { bc: 'mainnet', bcrt: 'private-1' };
 
-/**
- * Pick the staker principal and the Bitcoin key out of a Leather `getAddresses`
- * reply.
- *
- * Leather does not always return both. A BTC-only reply is normal — and for a
- * multisig staker the principal is the vault's, which the extension could not
- * know anyway. So this fills in whatever is present and reports what is missing
- * rather than refusing the whole connection.
- */
-export function pickWalletAddresses(list) {
-  const entries = Array.isArray(list) ? list.filter(a => a && typeof a === 'object') : [];
+export function pickWalletAddresses(list: unknown): WalletAddresses {
+  const entries: WalletEntry[] = Array.isArray(list) ? list.filter(a => a && typeof a === 'object') : [];
 
   const stx =
     entries.find(a => a.symbol === 'STX') ??
@@ -277,21 +262,17 @@ export function pickWalletAddresses(list) {
   const btcEntries = entries.filter(
     a => a.symbol === 'BTC' || /^(bc|tb|bcrt)1/.test(a.address || '')
   );
-  // The lockup tail is spent as a P2WSH input, so the segwit v0 key at m/84' is
-  // the one that belongs in it — not the taproot internal key at m/86'.
   const btc =
     btcEntries.find(a => a.type === 'p2wpkh' && a.publicKey) ??
     btcEntries.find(a => a.type !== 'p2tr' && a.publicKey) ??
     btcEntries.find(a => a.publicKey) ??
     null;
 
-  const missing = [];
+  const missing: ('stx' | 'btc')[] = [];
   if (!stx?.address) missing.push('stx');
   if (!btc?.publicKey) missing.push('btc');
 
-  // Whichever side came back tells us the chain: the principal's prefix, or
-  // failing that the HRP of the Bitcoin address.
-  let networkGuess = null;
+  let networkGuess: NetworkName | null = null;
   if (stx?.address) networkGuess = /^S[PM]/.test(stx.address) ? 'mainnet' : 'private-1';
   else if (btc?.address) networkGuess = HRP_NETWORK[(btc.address.match(/^(bcrt|bc|tb)1/) ?? [])[1]] ?? null;
 
@@ -300,7 +281,7 @@ export function pickWalletAddresses(list) {
     btcPublicKey: btc?.publicKey ? clean(btc.publicKey) : '',
     btcAddress: btc?.address ?? '',
     btcType: btc?.type ?? '',
-    taprootOnly: Boolean(btc) && btc.type === 'p2tr',
+    taprootOnly: Boolean(btc) && btc!.type === 'p2tr',
     missing,
     networkGuess,
   };

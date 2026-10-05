@@ -21,15 +21,18 @@ Supported networks: **private-1** (regtest, `bcrt1…`) and **mainnet** (`bc1…
 
 ```bash
 npm ci
-npm run dev      # requires python3; static server at http://localhost:8123
-npm run build    # bundle web/src → web/app.js
+npm run dev        # requires python3; static server at http://localhost:8123
+npm run typecheck  # tsc, no output files
+npm run build      # bundle web/src → web/app.js
 npm test
 ```
 
-Pushes to `main` build, test, and deploy `web/` to GitHub Pages.
+Pushes to `main` type-check, build, test, and deploy `web/` to GitHub Pages.
+
+The source is TypeScript. esbuild strips the types for the bundle and does not check them; `npm run typecheck` does. The tests import the `.ts` files directly through Node's type stripping, which is on by default from Node 22.18 and behind `--experimental-strip-types` (set in the `test` script) before that. Only erasable syntax is used (`erasableSyntaxOnly`): no enums, namespaces or parameter properties.
 
 ## Layout
 
-- `web/src/` — app, lock verification logic, rendering
+- `web/src/` — app wiring (`app.ts`), lock verification logic (`lock.ts`), rendering (`render.ts`), the script viewer (`script-view.ts`), shared types (`types.ts`) and ambient declarations (`globals.d.ts`)
 - `web/index.html` — page shell and styles
 - `test/` — Node tests (lock math, rendering, page smoke)

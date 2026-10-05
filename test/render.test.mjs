@@ -6,8 +6,8 @@ import test from 'node:test';
 import { buildLockScript } from '@stacks/bitcoin-staking';
 import { bytesToHex, hexToBytes } from '@stacks/common';
 
-import { NETWORKS, outputScriptToAddress, wshOutputScript } from '../web/src/lock.js';
-import { describeUnlockScript } from '../web/src/script-view.js';
+import { NETWORKS, outputScriptToAddress, wshOutputScript } from '../web/src/lock.ts';
+import { describeUnlockScript } from '../web/src/script-view.ts';
 
 const root = new URL('../', import.meta.url);
 const html = readFileSync(fileURLToPath(new URL('web/index.html', root)), 'utf8');
@@ -19,7 +19,7 @@ const UNLOCK_HEX = `5121${KEY1}21${KEY2}52ae`;
 const EARLY = '21032853a683729ff79dc33bce675d83892cf0bad4fc15462225de42d7b88ed89292ac';
 
 test('every element the code reaches for exists in index.html', () => {
-  for (const file of ['app.js', 'render.js']) {
+  for (const file of ['app.ts', 'render.ts']) {
     const src = readFileSync(fileURLToPath(new URL(`web/src/${file}`, root)), 'utf8');
     for (const [, id] of src.matchAll(/\$\('([^']+)'\)/g)) {
       assert.ok(ids.has(id), `${file} reads #${id}, which index.html does not define`);
@@ -95,7 +95,7 @@ function fakeResult(overrides = {}) {
 
 test('a passing result renders the address, the script and the checks', async () => {
   const nodes = stubDom();
-  const { renderResult } = await import('../web/src/render.js');
+  const { renderResult } = await import('../web/src/render.ts');
   const result = fakeResult();
   renderResult(result);
 
@@ -132,7 +132,7 @@ test('a passing result renders the address, the script and the checks', async ()
 
 test('a mismatch renders as a failure, not a pass', async () => {
   const nodes = stubDom();
-  const { renderResult } = await import('../web/src/render.js');
+  const { renderResult } = await import('../web/src/render.ts');
   renderResult(fakeResult({ comparison: { supplied: 'bcrt1qwrong', match: false } }));
 
   assert.equal(nodes.get('verdictMark').textContent, '✕');
@@ -144,7 +144,7 @@ test('a mismatch renders as a failure, not a pass', async () => {
 
 test('SDK/contract disagreement is reported as a failure', async () => {
   const nodes = stubDom();
-  const { renderResult } = await import('../web/src/render.js');
+  const { renderResult } = await import('../web/src/render.ts');
   renderResult(fakeResult({ agree: false, contractScript: `0020${'ff'.repeat(32)}`, comparison: null }));
 
   assert.equal(nodes.get('verdict').className, 'verdict err');
@@ -153,7 +153,7 @@ test('SDK/contract disagreement is reported as a failure', async () => {
 
 test('with no address supplied the verdict stays provisional', async () => {
   const nodes = stubDom();
-  const { renderResult } = await import('../web/src/render.js');
+  const { renderResult } = await import('../web/src/render.ts');
   renderResult(fakeResult({ comparison: null }));
 
   assert.equal(nodes.get('verdict').className, 'verdict warn');
@@ -163,7 +163,7 @@ test('with no address supplied the verdict stays provisional', async () => {
 
 test('the alternate key order is offered when it differs', async () => {
   const nodes = stubDom();
-  const { renderResult } = await import('../web/src/render.js');
+  const { renderResult } = await import('../web/src/render.ts');
   renderResult(fakeResult({ alternate: { label: 'BIP-67 sorted', address: 'bcrt1qalternate' } }));
 
   assert.match(nodes.get('verdictSub').innerHTML, /BIP-67 sorted/);
@@ -172,7 +172,7 @@ test('the alternate key order is offered when it differs', async () => {
 
 test('a single-sig result renders its own vocabulary', async () => {
   const nodes = stubDom();
-  const { renderResult } = await import('../web/src/render.js');
+  const { renderResult } = await import('../web/src/render.ts');
   const unlockBytes = hexToBytes(`21${KEY1}ac`);
   const lockScript = buildLockScript({
     stxAddress: 'SN275N04VCDVG27KQSESEKD6X06PS3HH634SNH41M',
