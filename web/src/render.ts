@@ -146,6 +146,9 @@ function scriptText(check: Check, result: VerifyResult): CheckWords {
       detail: 'Built locally in this browser and independently by the contract, from the same inputs.',
     };
   }
+  if (check.status !== 'fail') {
+    return { title: 'The SDK and pox-5 output scripts were not compared — not verified', detail: NOT_VERIFIED };
+  }
   return {
     title: 'The SDK and pox-5 disagree — do not fund this address',
     headline: 'The SDK and the contract disagree',
@@ -159,6 +162,9 @@ function expectedText(check: Check, result: VerifyResult): CheckWords {
   const c = result.comparison;
   const shown = c?.display ? `Supplied: ${c.display}` : null;
   const ours = revealsComputed(result) ? `This page computed ${result.address}.` : null;
+  if (check.status !== 'pass' && check.status !== 'fail' && check.reason !== 'missing') {
+    return { title: 'The address you supplied was not compared — not verified', detail: NOT_VERIFIED };
+  }
   switch (check.reason) {
     case 'match':
       return { title: 'The address you supplied matches', detail: shown };
@@ -205,6 +211,9 @@ function tailText(check: Check, result: VerifyResult): CheckWords {
       title: `The tail is a well-formed ${tail.label} spend condition`,
       detail: 'It leaves a boolean for the script that follows, as the contract requires.',
     };
+  }
+  if (check.status !== 'fail') {
+    return { title: 'The unlock tail was not checked — not verified', detail: NOT_VERIFIED };
   }
   if (check.reason === 'verify') {
     return {

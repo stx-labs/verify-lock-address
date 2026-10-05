@@ -358,6 +358,32 @@ test('the rendered banner, title and mark follow the single verdict for each req
   }
 });
 
+const FAILURE_WORDS = /disagree|does not match|malformed|does not end in|do not fund/i;
+
+test('a check that did not run is shown as not verified, never as that check failing', () => {
+  for (const id of REQUIRED_CHECKS.single) {
+    for (const [label, change] of [
+      ['unknown', checks => checks.map(c => (c.id === id ? { ...c, status: 'unknown', reason: 'unread' } : c))],
+      ['unrecognised status', checks => checks.map(c => (c.id === id ? { ...c, status: 'PASS' } : c))],
+      ['absent', checks => checks.filter(c => c.id !== id)],
+    ]) {
+      const { el, text } = page();
+      const base = fakeResult();
+      const checks = change(base.checks);
+      renderResult({ ...base, checks });
+      assert.equal(text('verdictMark'), '!', `${id} ${label}`);
+      assert.match(text('verdictTitle'), /^Not verified/, `${id} ${label}`);
+      const rows = Array.from(el('checks').querySelectorAll('.check:not(.manual)'));
+      assert.equal(rows.length, checks.length, `${id} ${label}`);
+      for (const row of rows) assert.doesNotMatch(row.textContent, FAILURE_WORDS, `${id} ${label}`);
+      const at = checks.findIndex(c => c.id === id);
+      if (at === -1) continue;
+      assert.equal(rows[at].querySelector('.m').textContent, '—', `${id} ${label}`);
+      assert.match(rows[at].querySelector('.t').textContent, /not verified$/, `${id} ${label}`);
+    }
+  }
+});
+
 test('no computed address or script reaches the page unless a decoded wallet value was compared; the other key order never does', () => {
   const base = fakeResult();
   const altBytes = hexToBytes(`5121${KEY2}21${KEY1}52ae`);
