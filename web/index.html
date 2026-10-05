@@ -786,7 +786,7 @@
         <div class="field wide">
           <label for="expected">
             Address the wallet is about to fund
-            <span class="hint">optional — paste it for a direct pass/fail</span>
+            <span class="hint">needed for a match — paste it from your wallet's approval popup; this page shows its own only after comparing</span>
           </label>
           <input type="text" id="expected" spellcheck="false" autocomplete="off" placeholder="bcrt1q… or the 34-byte output script hex" />
         </div>
@@ -890,8 +890,10 @@
       <section class="pane">
         <h2 class="pane-title">Before you approve</h2>
         <p class="pane-sub">
-          The first three are checked here. The last two only you can confirm — this page
-          cannot tell whether the keys are yours.
+          The first three compare your inputs, in your browser, against <code>pox-5</code>: the output
+          script, the address you pasted, and the unlock tail. Each is marked ✓ passed, ✕ failed, or
+          — could not be run; the verdict is a match only when every one passed. The last two only
+          you can confirm — this page cannot tell whether the keys are yours.
         </p>
         <div class="checks" id="checks"></div>
       </section>

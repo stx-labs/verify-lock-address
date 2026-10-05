@@ -1,16 +1,17 @@
-// End-to-end over the real index.html, driven headlessly.
-//
-// The unit tests cover the modules; this covers the wiring between them — the
-// class of bug (a lost import, an id that moved) that only shows up when the
-// page actually runs.
-
+import { live } from './helpers/offline.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import test, { before } from 'node:test';
 
+import { bech32 } from '@scure/base';
+import { hexToBytes } from '@stacks/common';
 import { JSDOM } from 'jsdom';
+
+import { NETWORKS } from '../web/src/lock.ts';
+import { deadlineError, isTransient, reachable, skipOnTransient } from './helpers/live.mjs';
+import { ALLOWLISTED, BOND_2_EARLY, BOND_2_HEIGHT, NOT_LISTED, contractLockupOutputScript, stubApi } from './helpers/stub-api.mjs';
 
 const root = new URL('../', import.meta.url);
 const path = rel => fileURLToPath(new URL(rel, root));
@@ -20,16 +21,18 @@ const KEY2 = '039236b5534c437a2bf0b59963d57771c3f88687b4b3f90b35703dce4acd3879f4
 const STX = 'SN275N04VCDVG27KQSESEKD6X06PS3HH634SNH41M';
 const ADDRESS = 'bcrt1qy088v00xhafqjm5pulh2py67nwjg7g3l9aglsjytz7cp80m9lafqqkcdvw';
 
+const LIVE_PAGE_TIMEOUT_MS = 45_000;
+
+const pageError = (message, name, code) =>
+  Object.assign(new Error(message), { name: name || 'Error', cause: code ? Object.assign(new Error(code), { code }) : undefined });
+
 let bundle;
 
 before(() => {
-  // jsdom cannot run <script type="module">, so the same sources are rebuilt as
-  // an IIFE and evaluated in the window.
   execFileSync('npm', ['run', 'build:test'], { cwd: path('.'), stdio: 'pipe' });
   bundle = readFileSync(path('.tmp/app.iife.js'), 'utf8');
 });
 
-/** Load index.html, run the app in it, and hand back the window. */
 function loadPage() {
   const html = readFileSync(path('web/index.html'), 'utf8').replace(
     '<script type="module" src="app.js"></script>',
@@ -38,7 +41,6 @@ function loadPage() {
   const dom = new JSDOM(html, {
     runScripts: 'dangerously',
     pretendToBeVisual: true,
-    // jsdom has no matchMedia; the page's theme bootstrap runs before anything else.
     beforeParse(w) {
       w.matchMedia = () => ({ matches: false, addEventListener() {} });
     },
@@ -60,6 +62,8 @@ function setValue(doc, id, value) {
   el.dispatchEvent(new doc.defaultView.Event('input', { bubbles: true }));
 }
 
+const checksText = doc => doc.getElementById('checks').textContent.replace(/\s+/g, ' ');
+
 test('the page boots without errors, offering the single-key flow', () => {
   const { doc, errors } = loadPage();
   assert.deepEqual(errors, []);
@@ -67,7 +71,6 @@ test('the page boots without errors, offering the single-key flow', () => {
   assert.equal(doc.getElementById('netBadgeText').textContent, 'private-1');
   assert.ok(doc.getElementById('pubkey'), 'the public-key field is the only unlock input');
 
-  // The multisig and raw-hex flows are parked in the UI; nothing should reference them.
   for (const gone of ['modeSeg', 'paneMulti', 'paneRaw', 'keyList', 'threshold', 'sortKeys', 'rawHex']) {
     assert.equal(doc.getElementById(gone), null, `#${gone} should no longer be in the page`);
   }
@@ -88,16 +91,16 @@ test('form validation refuses to run on incomplete input', () => {
   const { doc } = loadPage();
   click(doc, 'verifyBtn');
   assert.equal(doc.getElementById('formErr').hidden, false);
-  assert.match(doc.getElementById('formErr').innerHTML, /bond index/);
+  assert.match(doc.getElementById('formErr').textContent, /bond index/);
 
   setValue(doc, 'bondIndex', '106');
   click(doc, 'verifyBtn');
-  assert.match(doc.getElementById('formErr').innerHTML, /Stacks address/);
+  assert.match(doc.getElementById('formErr').textContent, /Stacks address/);
 
   setValue(doc, 'stxAddress', STX);
   setValue(doc, 'pubkey', 'not-a-key');
   click(doc, 'verifyBtn');
-  assert.match(doc.getElementById('formErr').innerHTML, /66 hex characters/);
+  assert.match(doc.getElementById('formErr').textContent, /66 hex characters/);
 });
 
 test('a mainnet address on private-1 is caught before anything is funded', () => {
@@ -105,51 +108,59 @@ test('a mainnet address on private-1 is caught before anything is funded', () =>
   setValue(doc, 'bondIndex', '106');
   setValue(doc, 'stxAddress', 'SP2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKNRV9EJ7');
   setValue(doc, 'pubkey', KEY1);
-  // The warning rides along with the result rather than blocking, so this only
-  // asserts the form itself accepts it — the network mismatch surfaces below.
   assert.equal(doc.getElementById('formErr').hidden, true);
 });
 
 test('a full verification renders end to end', async t => {
-  const reachable = await fetch('https://api.private-1.hiro.so/v2/pox', { signal: AbortSignal.timeout(8000) })
-    .then(r => r.ok)
-    .catch(() => false);
-  if (!reachable) return t.skip('private-1 API unreachable');
+  if (!(await reachable(t, `${NETWORKS['private-1'].api}/v2/pox`))) return;
 
-  // Derive the expected address through the module, then drive the page to it —
-  // this pins the wiring, while lock.test.mjs pins the module to the documented value.
   const { verify } = await import('../web/src/lock.ts');
   const { buildUnlockScript } = await import('@stacks/bitcoin-staking');
-  const expected = await verify({
-    network: 'private-1',
-    bondIndex: 106,
-    stxAddress: STX,
-    unlockBytes: buildUnlockScript(KEY1),
-  });
+  const ran = await skipOnTransient(t, () => live(async () => {
+    const expected = await verify({
+      network: 'private-1',
+      bondIndex: 106,
+      stxAddress: STX,
+      unlockBytes: buildUnlockScript(KEY1),
+    });
+
+    const page = loadPage();
+    const { doc } = page;
+    setValue(doc, 'bondIndex', '106');
+    setValue(doc, 'stxAddress', STX);
+    setValue(doc, 'pubkey', KEY1);
+    setValue(doc, 'expected', expected.address);
+    click(doc, 'verifyBtn');
+
+    const deadline = Date.now() + LIVE_PAGE_TIMEOUT_MS;
+    while (Date.now() < deadline && doc.getElementById('results').hidden && doc.getElementById('formErr').hidden) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+    if (doc.getElementById('results').hidden && doc.getElementById('formErr').hidden) {
+      throw deadlineError(LIVE_PAGE_TIMEOUT_MS);
+    }
+    const formErr = doc.getElementById('formErr');
+    if (!formErr.hidden) throw pageError(formErr.textContent, formErr.dataset.errorName, formErr.dataset.errorCode);
+    return { ...page, expected };
+  }));
+  if (!ran) return;
+  const { doc, errors, expected } = ran;
   assert.equal(expected.agree, true);
 
-  const { doc, errors } = loadPage();
-  setValue(doc, 'bondIndex', '106');
-  setValue(doc, 'stxAddress', STX);
-  setValue(doc, 'pubkey', KEY1);
-  setValue(doc, 'expected', expected.address);
-  click(doc, 'verifyBtn');
-
-  for (let i = 0; i < 100 && doc.getElementById('results').hidden; i += 1) {
-    await new Promise(r => setTimeout(r, 100));
-  }
-
   assert.deepEqual(errors, []);
-  assert.equal(doc.getElementById('formErr').hidden, true, doc.getElementById('formErr').innerHTML);
+  assert.equal(doc.getElementById('formErr').hidden, true, doc.getElementById('formErr').textContent);
   assert.equal(doc.getElementById('results').hidden, false);
   assert.equal(doc.getElementById('addrText').textContent, expected.address);
   assert.ok(expected.address.startsWith('bcrt1q'));
-  assert.equal(doc.getElementById('verdictMark').textContent, '\u2713');
+  assert.equal(doc.getElementById('verdictMark').textContent, '✓');
+  assert.equal(doc.getElementById('verdictTitle').textContent, 'Match — this is the address to fund');
+  assert.match(checksText(doc), /The SDK and pox-5 derive the same output script/);
+  assert.match(checksText(doc), /The address you supplied matches/);
   assert.equal(doc.getElementById('tPolicy').textContent, 'single key');
   assert.equal(doc.getElementById('tHeight').textContent, '4690');
-  assert.match(doc.getElementById('asmOut').innerHTML, /OP_CHECKLOCKTIMEVERIFY/);
-  assert.match(doc.getElementById('asmOut').innerHTML, /your key #1/);
-  assert.match(doc.getElementById('asmOut').innerHTML, /final authorisation — one signature/);
+  assert.match(doc.getElementById('asmOut').textContent, /OP_CHECKLOCKTIMEVERIFY/);
+  assert.match(doc.getElementById('asmOut').textContent, /your key #1/);
+  assert.match(doc.getElementById('asmOut').textContent, /final authorisation — one signature/);
   assert.equal(doc.getElementById('paneLoading').hidden, true);
   assert.equal(doc.getElementById('verifyBtn').disabled, false);
 
@@ -158,7 +169,6 @@ test('a full verification renders end to end', async t => {
   assert.match(doc.getElementById('rawHexOut').textContent, /^63/);
 });
 
-/** Install a Leather stub that answers `getAddresses` with `addresses`. */
 function withLeather(window, addresses) {
   window.LeatherProvider = {
     request: async method => {
@@ -170,7 +180,6 @@ function withLeather(window, addresses) {
 
 const settle = () => new Promise(r => setTimeout(r, 20));
 
-// Verbatim from a real Leather reply: two BTC accounts, no STX entry.
 const BTC_ONLY = [
   {
     symbol: 'BTC',
@@ -206,21 +215,22 @@ test('a BTC-only wallet reply connects and says what is still needed', async () 
 
   const note = doc.getElementById('walletNote');
   assert.equal(note.hidden, false);
-  assert.match(note.innerHTML, /no Stacks address/);
-  assert.match(note.innerHTML, /vault/, 'points multisig stakers at the right principal');
-  assert.doesNotMatch(note.innerHTML, /no Bitcoin public key/);
+  assert.match(note.textContent, /no Stacks address/);
+  assert.match(note.textContent, /the Stacks principal the staking app will register with/);
+  assert.match(note.textContent, /single-key SP… \(mainnet\) \/ ST… \(private-1\) address/);
+  assert.match(note.textContent, /multisig vault has no Stacks principal/);
+  assert.doesNotMatch(note.textContent, /SM…\/SN…/);
+  assert.doesNotMatch(note.textContent, /no Bitcoin public key/);
 
-  // The BTC address HRP identifies the chain when there is no principal to read.
   assert.equal(doc.getElementById('network').value, 'private-1');
   assert.equal(doc.getElementById('walletBadge').hidden, false);
   assert.equal(doc.getElementById('connectBtn').hidden, true);
 
-  // The form still works: type the principal and verify.
+  window.fetch = stubApi({ network: 'private-1', bonds: [106] }).fetch;
   setValue(doc, 'bondIndex', '106');
   setValue(doc, 'stxAddress', STX);
-  click(doc, 'verifyBtn');
-  await settle();
-  assert.equal(doc.getElementById('formErr').hidden, true, doc.getElementById('formErr').innerHTML);
+  await runVerify(doc);
+  assert.equal(doc.getElementById('formErr').hidden, true, doc.getElementById('formErr').textContent);
 });
 
 test('an STX-only wallet reply connects and asks for the key', async () => {
@@ -234,8 +244,8 @@ test('an STX-only wallet reply connects and asks for the key', async () => {
   assert.equal(doc.getElementById('formErr').hidden, true);
   assert.equal(doc.getElementById('stxAddress').value, STX);
   assert.equal(doc.getElementById('pubkey').value, '');
-  assert.match(doc.getElementById('walletNote').innerHTML, /no Bitcoin public key/);
-  assert.match(doc.getElementById('walletNote').innerHTML, /paste the compressed key/i);
+  assert.match(doc.getElementById('walletNote').textContent, /no Bitcoin public key/);
+  assert.match(doc.getElementById('walletNote').textContent, /paste the compressed key/i);
   assert.equal(doc.getElementById('network').value, 'private-1');
 });
 
@@ -273,7 +283,7 @@ test('an empty wallet reply is the one case that is an error', async () => {
   await settle();
 
   assert.equal(doc.getElementById('formErr').hidden, false);
-  assert.match(doc.getElementById('formErr').innerHTML, /neither a Stacks address nor a Bitcoin public key/);
+  assert.match(doc.getElementById('formErr').textContent, /neither a Stacks address nor a Bitcoin public key/);
   assert.equal(doc.getElementById('connectBtn').hidden, false, 'still connectable after a failure');
   assert.equal(doc.getElementById('connectBtn').disabled, false);
 });
@@ -284,7 +294,7 @@ test('no extension at all gives an actionable message', async () => {
   await settle();
 
   assert.equal(doc.getElementById('formErr').hidden, false);
-  assert.match(doc.getElementById('formErr').innerHTML, /Leather was not detected/);
+  assert.match(doc.getElementById('formErr').textContent, /Leather was not detected/);
 });
 
 test('disconnect clears the fields and the notice', async () => {
@@ -300,4 +310,262 @@ test('disconnect clears the fields and the notice', async () => {
   assert.equal(doc.getElementById('walletNote').hidden, true);
   assert.equal(doc.getElementById('walletBadge').hidden, true);
   assert.equal(doc.getElementById('connectBtn').hidden, false);
+});
+
+const lockAddress = (staker, pubkey) => {
+  const output = contractLockupOutputScript({
+    staker,
+    unlockHeight: BOND_2_HEIGHT,
+    stakerUnlockHex: `21${pubkey}ac`,
+    earlyUnlockHex: BOND_2_EARLY,
+  });
+  return bech32.encode('bc', [0, ...bech32.toWords(hexToBytes(output.slice(4)))]);
+};
+
+const LOCK_ADDRESS = lockAddress(ALLOWLISTED, KEY1);
+
+async function runVerify(doc) {
+  click(doc, 'verifyBtn');
+  for (let i = 0; i < 100 && doc.getElementById('results').hidden && doc.getElementById('formErr').hidden; i += 1) {
+    await new Promise(r => setTimeout(r, 20));
+  }
+  assert.equal(doc.getElementById('formErr').hidden, true, doc.getElementById('formErr').textContent);
+  assert.equal(doc.getElementById('results').hidden, false);
+}
+
+test('a Leather account fills the single key and verifies', async () => {
+  const { doc, window, errors } = loadPage();
+  withLeather(window, [
+    { symbol: 'STX', address: ALLOWLISTED },
+    { symbol: 'BTC', type: 'p2wpkh', address: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', publicKey: KEY1 },
+  ]);
+  window.fetch = stubApi().fetch;
+
+  click(doc, 'connectBtn');
+  await settle();
+
+  assert.deepEqual(errors, []);
+  assert.equal(doc.getElementById('formErr').hidden, true);
+  assert.equal(doc.getElementById('stxAddress').value, ALLOWLISTED);
+  assert.equal(doc.getElementById('pubkey').value, KEY1);
+  assert.ok(['stxAddress', 'pubkey'].every(id => doc.getElementById(id).classList.contains('prefilled')));
+  assert.equal(doc.getElementById('network').value, 'mainnet', 'the Stacks address decides the chain');
+  assert.equal(doc.getElementById('walletNote').hidden, true);
+
+  setValue(doc, 'bondIndex', '2');
+  await runVerify(doc);
+
+  assert.notEqual(doc.getElementById('addrText').textContent, LOCK_ADDRESS, 'withheld until the wallet destination is pasted');
+  assert.ok(!doc.body.textContent.includes(LOCK_ADDRESS));
+  assert.equal(doc.getElementById('verdictTitle').textContent, 'Not compared — paste the destination from your wallet');
+  assert.equal(doc.getElementById('tPolicy').textContent, 'single key');
+  assert.equal(doc.getElementById('tHeight').textContent, String(BOND_2_HEIGHT));
+  assert.equal(doc.getElementById('tHeightSrc').textContent, 'computeBondUnlockHeight');
+  assert.equal(doc.getElementById('verdictMark').textContent, '!', 'consistent, but not compared');
+  assert.match(checksText(doc), /The SDK and pox-5 derive the same output script/);
+  assert.match(checksText(doc), /No address supplied to compare against/);
+
+  setValue(doc, 'expected', LOCK_ADDRESS);
+  await runVerify(doc);
+  assert.equal(doc.getElementById('addrText').textContent, LOCK_ADDRESS);
+  assert.equal(doc.getElementById('verdictMark').textContent, '✓');
+  assert.equal(doc.getElementById('verdictTitle').textContent, 'Match — this is the address to fund');
+  assert.match(checksText(doc), /The address you supplied matches/);
+});
+
+test('a wallet reply with a BTC key but no address connects without crashing', async () => {
+  const { doc, window, errors } = loadPage();
+  withLeather(window, [{ symbol: 'BTC', type: 'p2wpkh', publicKey: KEY2 }]);
+  click(doc, 'connectBtn');
+  await settle();
+
+  assert.deepEqual(errors, []);
+  assert.equal(doc.getElementById('formErr').hidden, true, doc.getElementById('formErr').textContent);
+  assert.equal(doc.getElementById('pubkey').value, KEY2);
+  assert.equal(doc.getElementById('walletBadge').hidden, false);
+  assert.equal(doc.getElementById('walletBadgeText').textContent, `${KEY2.slice(0, 6)}…${KEY2.slice(-4)}`);
+  assert.equal(doc.getElementById('connectBtn').textContent, 'Connect Leather');
+  assert.equal(doc.getElementById('disconnectBtn').hidden, false);
+
+  click(doc, 'disconnectBtn');
+  withLeather(window, [{ symbol: 'STX' }, { symbol: 'BTC', type: 'p2wpkh', publicKey: KEY1, address: '' }]);
+  click(doc, 'connectBtn');
+  await settle();
+  assert.deepEqual(errors, []);
+  assert.equal(doc.getElementById('pubkey').value, KEY1);
+});
+
+function fillForm(doc, window) {
+  doc.getElementById('network').value = 'mainnet';
+  doc.getElementById('network').dispatchEvent(new window.Event('change', { bubbles: true }));
+  setValue(doc, 'bondIndex', '2');
+  setValue(doc, 'stxAddress', ALLOWLISTED);
+  setValue(doc, 'pubkey', KEY1);
+  setValue(doc, 'expected', LOCK_ADDRESS);
+}
+
+test('a pasted expected address cannot inject markup into the checks', async () => {
+  const { doc, window } = loadPage();
+  window.fetch = stubApi().fetch;
+  fillForm(doc, window);
+  setValue(doc, 'expected', `${LOCK_ADDRESS}   <img id="pwned" src="x" onerror="document.title='pwned'">`);
+  await runVerify(doc);
+
+  assert.equal(doc.querySelector('#results img'), null);
+  assert.equal(doc.getElementById('pwned'), null);
+  assert.match(checksText(doc), /not a Bitcoin address or output script/);
+  assert.doesNotMatch(doc.body.textContent, /pwned/, 'unreadable input is not echoed at all');
+  assert.equal(doc.getElementById('verdictMark').textContent, '✕');
+});
+
+test('a staker principal that is not one is refused without echoing it', () => {
+  const { doc } = loadPage();
+  setValue(doc, 'bondIndex', '106');
+  setValue(doc, 'stxAddress', 'not-a-principal-xyz');
+  setValue(doc, 'pubkey', KEY1);
+  click(doc, 'verifyBtn');
+  const err = doc.getElementById('formErr');
+  assert.match(err.textContent, /does not look like a Stacks address/);
+  assert.ok(!err.textContent.includes('not-a-principal-xyz'));
+});
+
+test('any change to the inputs, network or wallet clears a shown result', async () => {
+  const changes = {
+    input: (doc) => setValue(doc, 'stxAddress', NOT_LISTED),
+    network: (doc, window) => {
+      doc.getElementById('network').value = 'private-1';
+      doc.getElementById('network').dispatchEvent(new window.Event('change', { bubbles: true }));
+    },
+    connect: async (doc, window) => {
+      withLeather(window, [{ symbol: 'STX', address: STX }, ...BTC_ONLY]);
+      click(doc, 'connectBtn');
+      await settle();
+    },
+    disconnect: (doc) => click(doc, 'disconnectBtn'),
+  };
+  for (const [what, change] of Object.entries(changes)) {
+    const { doc, window } = loadPage();
+    window.fetch = stubApi().fetch;
+    fillForm(doc, window);
+    await runVerify(doc);
+    assert.equal(doc.getElementById('verdictMark').textContent, '✓', what);
+    await change(doc, window);
+    assert.equal(doc.getElementById('results').hidden, true, `${what} clears the result`);
+  }
+});
+
+test('a result that arrives after the inputs changed is discarded', async () => {
+  const { doc, window } = loadPage();
+  const stub = stubApi();
+  let release;
+  const gate = new Promise(r => {
+    release = r;
+  });
+  window.fetch = async (url, init) => {
+    await gate;
+    return stub.fetch(url, init);
+  };
+  fillForm(doc, window);
+  click(doc, 'verifyBtn');
+  await settle();
+  setValue(doc, 'stxAddress', NOT_LISTED);
+  release();
+  await new Promise(r => setTimeout(r, 300));
+  assert.equal(doc.getElementById('results').hidden, true);
+  assert.equal(doc.getElementById('formErr').hidden, true);
+  assert.equal(doc.getElementById('verifyBtn').disabled, false);
+});
+
+test('whole numbers typed in any form a number input accepts are read as such', async () => {
+  for (const [bond, override] of [['2.0', ''], ['2', '994700.0'], ['2e0', '9947e2']]) {
+    const { doc, window } = loadPage();
+    const calls = stubApi();
+    window.fetch = calls.fetch;
+    fillForm(doc, window);
+    setValue(doc, 'bondIndex', bond);
+    setValue(doc, 'heightOverride', override);
+    await runVerify(doc);
+    assert.equal(doc.getElementById('tBond').textContent, '2', bond);
+    assert.equal(doc.getElementById('tHeight').textContent, '994700', override);
+  }
+  const { doc, window } = loadPage();
+  fillForm(doc, window);
+  setValue(doc, 'bondIndex', '2.5');
+  click(doc, 'verifyBtn');
+  assert.match(doc.getElementById('formErr').textContent, /The bond index must be a whole number, 0 or above/);
+});
+
+test("Leather's own rejection reason is shown, and a cancel says so", async () => {
+  for (const [rejection, shown] of [
+    [{ jsonrpc: '2.0', id: '1', error: { code: 4001, message: 'User rejected request' } }, 'You cancelled the request in Leather.'],
+    [{ jsonrpc: '2.0', id: '1', error: { code: -32603, message: 'Wallet is locked' } }, 'Wallet is locked'],
+    ['plain string reason', 'plain string reason'],
+    [{}, 'Something went wrong.'],
+  ]) {
+    const { doc, window } = loadPage();
+    window.LeatherProvider = { request: async () => Promise.reject(rejection) };
+    click(doc, 'connectBtn');
+    await settle();
+    assert.equal(doc.getElementById('formErr').textContent, shown);
+  }
+});
+
+test('the copy button always returns to its own label', async () => {
+  const { doc, window } = loadPage();
+  Object.defineProperty(window.navigator, 'clipboard', { value: { writeText: async () => {} }, configurable: true });
+  window.fetch = stubApi().fetch;
+  fillForm(doc, window);
+  await runVerify(doc);
+  const btn = doc.querySelector('[data-copy="addrText"]');
+  const label = btn.textContent;
+  btn.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 500));
+  btn.dispatchEvent(new window.Event('click', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 1600));
+  assert.equal(btn.textContent, label);
+  assert.equal(btn.classList.contains('copied'), false);
+  await new Promise(r => setTimeout(r, 600));
+  assert.equal(btn.textContent, label);
+});
+
+test('a failure keeps its error name and code on the page, so a transient one can be told apart', async () => {
+  const { doc, window } = loadPage();
+  window.fetch = stubApi({ fail: { 'get-protocol-bond': 'network' } }).fetch;
+  fillForm(doc, window);
+  click(doc, 'verifyBtn');
+  for (let i = 0; i < 100 && doc.getElementById('formErr').hidden; i += 1) await settle();
+  assert.equal(doc.getElementById('formErr').dataset.errorCode, 'ECONNRESET');
+  assert.equal(isTransient(pageError('x', doc.getElementById('formErr').dataset.errorName, 'ECONNRESET')), true);
+});
+
+test('changing the inputs cancels a running verification: its requests abort and Verify is usable at once', async () => {
+  const stages = [
+    { hang: ['pox', 'get-protocol-bond'], hung: /\/v2\/pox$|get-protocol-bond/ },
+    { hang: ['construct-lockup-output-script'], hung: /construct-lockup-output-script/ },
+  ];
+  for (const { hang, hung } of stages) {
+    const { doc, window } = loadPage();
+    const stub = stubApi({ hang });
+    window.fetch = stub.fetch;
+    fillForm(doc, window);
+    click(doc, 'verifyBtn');
+    await settle();
+    assert.equal(doc.getElementById('verifyBtn').disabled, true, 'running');
+    assert.equal(doc.getElementById('paneLoading').hidden, false);
+
+    setValue(doc, 'expected', '');
+    assert.equal(doc.getElementById('verifyBtn').disabled, false, 'usable again without waiting for the reads');
+    assert.equal(doc.getElementById('paneLoading').hidden, true);
+    await settle();
+    const inFlight = stub.requests.filter(r => hung.test(r.url));
+    assert.equal(inFlight.length, hang.length, `${hang}: every hung read was sent`);
+    assert.ok(inFlight.every(r => r.signal.aborted), `${hang}: the superseded reads were aborted`);
+    assert.equal(doc.getElementById('formErr').hidden, true, 'a cancelled run shows no error');
+    assert.equal(doc.getElementById('results').hidden, true);
+
+    window.fetch = stubApi().fetch;
+    setValue(doc, 'expected', LOCK_ADDRESS);
+    await runVerify(doc);
+    assert.equal(doc.getElementById('verdictMark').textContent, '✓', 'the next run is not affected');
+  }
 });
