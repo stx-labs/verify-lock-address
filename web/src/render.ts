@@ -1,29 +1,41 @@
-// Turns a `verify` result into the page. Kept apart from the event wiring so the
-// whole render path can be exercised against a stub DOM.
-
 import { bytesToHex, hexToBytes } from '@stacks/common';
 
-import { annotate, disassemble, tokenClass, tokenText } from './script-view.js';
+import { annotate, disassemble, tokenClass, tokenText } from './script-view.ts';
+import type { Segment } from './script-view.ts';
+import type { VerifyResult } from './types.ts';
 
-const $ = id => document.getElementById(id);
+interface SegmentInfo {
+  key: Segment;
+  name: string;
+  src: string;
+  bytes: Uint8Array;
+  at: number;
+}
 
-const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+interface CheckRow {
+  ok?: boolean | null;
+  manual?: boolean;
+  title: string;
+  detail: string;
+}
 
-function renderScript(result) {
+const $ = (id: string) => document.getElementById(id) as HTMLElement;
+
+const esc = (s: unknown) => String(s).replace(/[&<>"]/g, c => (({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }) as Record<string, string>)[c]);
+
+function renderScript(result: VerifyResult): void {
   const { lockScript, unlockBytes, earlyUnlockBytes, tail, unlockHeight } = result;
   const early = hexToBytes(earlyUnlockBytes);
 
-  // `buildLockScript` concatenates: scaffold | early-unlock-bytes | ENDIF VERIFY | staker.
-  // The two scaffold pieces are the contract's; the offsets fall out of the lengths.
   const headLen = lockScript.length - unlockBytes.length - 2 - early.length;
-  const segments = [
+  const segments: SegmentInfo[] = [
     { key: 'scaffold', name: 'Lockup scaffold', src: 'pox-5 construct-lockup-script', bytes: lockScript.slice(0, headLen), at: 0 },
     { key: 'early', name: 'early-unlock-bytes', src: `bond ${result.bondIndex}, read from chain`, bytes: early, at: headLen },
     { key: 'scaffold', name: 'Lockup scaffold', src: 'both branches rejoin here', bytes: lockScript.slice(headLen + early.length, headLen + early.length + 2), at: headLen + early.length },
     { key: 'staker', name: 'staker-unlock-bytes', src: `yours — ${tail.label}`, bytes: unlockBytes, at: headLen + early.length + 2 },
   ];
 
-  const swatch = { scaffold: 'var(--sand-300)', early: 'var(--blue-400)', staker: 'var(--stacks-500)' };
+  const swatch: Record<Segment, string> = { scaffold: 'var(--sand-300)', early: 'var(--blue-400)', staker: 'var(--stacks-500)' };
 
   const html = segments
     .map(seg => {
@@ -62,9 +74,9 @@ function renderScript(result) {
     `<span class="h-staker">${h.slice(c)}</span>`;
 }
 
-function renderRows(result) {
+function renderRows(result: VerifyResult): void {
   const { net } = result;
-  const rows = [
+  const rows: [string, string, boolean?][] = [
     ['Network', `${net.label} · ${net.api} · ${net.hrp}1…`, true],
     ['Staker principal', result.stxAddress],
     ['Bond index', String(result.bondIndex), true],
@@ -87,11 +99,11 @@ function renderRows(result) {
     .join('');
 }
 
-function renderChecks(result) {
+function renderChecks(result: VerifyResult): void {
   const { tail } = result;
   const keyList = tail.keys.map((k, i) => `#${i + 1} ${k}`).join('<br />');
 
-  const checks = [
+  const checks: CheckRow[] = [
     {
       ok: result.agree,
       title: result.agree
@@ -134,7 +146,7 @@ function renderChecks(result) {
         'This is the check that actually protects the funds. Everything above only proves the ' +
         'address is internally consistent with whatever keys were fed in — it cannot tell you they ' +
         'belong to you.' +
-        (tail.threshold === 1 && tail.total > 1
+        (tail.threshold === 1 && (tail.total ?? 0) > 1
           ? ' A 1-of-N policy means any single one of these keys can sweep the BTC alone.'
           : ''),
     },
@@ -165,7 +177,7 @@ function renderChecks(result) {
     .join('');
 }
 
-export function renderResult(result) {
+export function renderResult(result: VerifyResult): void {
   const failed =
     !result.agree ||
     (result.comparison && !result.comparison.match) ||
@@ -218,4 +230,3 @@ export function renderResult(result) {
   $('results').hidden = false;
   $('results').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
-

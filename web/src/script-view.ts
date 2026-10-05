@@ -1,12 +1,26 @@
-// Disassembler for the pox-5 lockup script.
-//
-// The page needs more than `Script.decode` gives: byte offsets, the raw bytes of
-// every push, and which of the three spliced segments each token came from. The
-// segments are the point of the whole exercise — the scaffold is the contract's,
-// `early-unlock-bytes` belongs to the bond, and only `staker-unlock-bytes` is yours.
+export type Token =
+  | { off: number; kind: 'bad'; text: string; raw: Uint8Array }
+  | { off: number; kind: 'push'; len: number; data: Uint8Array; pushHex: string; text: string }
+  | { off: number; kind: 'smallnum'; n: number; text: string }
+  | { off: number; kind: 'op'; op: string; text: string }
+  | { off: number; kind: 'unknown'; text: string };
 
-/** Opcodes the lockup script and its two subscripts can plausibly contain. */
-const OPCODES = {
+export type AnnotatedToken = Token & { cmt: string };
+
+export type Segment = 'scaffold' | 'early' | 'staker';
+
+export type TailKind = 'single' | 'multisig' | 'unknown';
+
+export interface Tail {
+  kind: TailKind;
+  keys: string[];
+  threshold: number | null;
+  total: number | null;
+  label: string;
+  verify: boolean;
+}
+
+const OPCODES: Record<number, string | undefined> = {
   0x00: 'OP_0',
   0x4c: 'OP_PUSHDATA1',
   0x4d: 'OP_PUSHDATA2',
@@ -62,10 +76,9 @@ const CRYPTO = new Set([
   'OP_CHECKSEQUENCEVERIFY',
 ]);
 
-const hex = bytes => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+const hex = (bytes: Uint8Array) => Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 
-/** Minimal little-endian signed ScriptNum, the encoding CLTV heights use. */
-export function decodeScriptNum(bytes) {
+export function decodeScriptNum(bytes: Uint8Array): number {
   if (bytes.length === 0) return 0;
   let n = 0n;
   for (let i = 0; i < bytes.length; i += 1) n |= BigInt(bytes[i]) << BigInt(8 * i);
@@ -74,21 +87,15 @@ export function decodeScriptNum(bytes) {
   return Number(n);
 }
 
-/**
- * Decode `bytes` into tokens carrying their absolute offset in the assembled
- * script. A truncated push yields a single `bad` token rather than throwing —
- * the whole point of the view is to show a malformed script rather than hide it.
- */
-export function disassemble(bytes, baseOffset = 0) {
-  const out = [];
+export function disassemble(bytes: Uint8Array, baseOffset = 0): Token[] {
+  const out: Token[] = [];
   let i = 0;
 
   while (i < bytes.length) {
     const off = baseOffset + i;
     const b = bytes[i];
 
-    // Data pushes: direct (0x01..0x4b) and the PUSHDATA1/2 prefixes.
-    let dataLen = null;
+    let dataLen: number | null | undefined = null;
     let headerLen = 1;
 
     if (b >= 0x01 && b <= 0x4b) {
@@ -137,8 +144,7 @@ export function disassemble(bytes, baseOffset = 0) {
   return out;
 }
 
-/** CSS token class for a decoded token. */
-export function tokenClass(tok) {
+export function tokenClass(tok: Token): string {
   if (tok.kind === 'bad' || tok.kind === 'unknown') return 't-bad';
   if (tok.kind === 'smallnum') return 't-num';
   if (tok.kind === 'op') {
@@ -152,19 +158,17 @@ export function tokenClass(tok) {
   return 't-push';
 }
 
-/** How a push should read in the asm column. */
-export function tokenText(tok) {
+export function tokenText(tok: Token): string {
   if (tok.kind !== 'push') return tok.text;
   if (tok.len <= 5) return `${decodeScriptNum(tok.data)}`;
   return tok.text;
 }
 
-/**
- * Attach a human comment to each token. `segment` decides the vocabulary: the
- * same 33-byte push means "the bond's early-unlock key" in one segment and
- * "your key" in another, and that distinction is the one a staker must not miss.
- */
-export function annotate(tokens, segment, ctx = {}) {
+export function annotate(
+  tokens: Token[],
+  segment: Segment,
+  ctx: { unlockHeight?: number; threshold?: number | null } = {}
+): AnnotatedToken[] {
   let keyIndex = 0;
   let sawIf = false;
 
@@ -223,11 +227,7 @@ export function annotate(tokens, segment, ctx = {}) {
   });
 }
 
-/**
- * Read an `OP_m <keys…> OP_n OP_CHECKMULTISIG` / `<key> OP_CHECKSIG` tail back
- * out of raw bytes, so a pasted script describes itself the same way a built one does.
- */
-export function describeUnlockScript(bytes) {
+export function describeUnlockScript(bytes: Uint8Array): Tail {
   const tokens = disassemble(bytes);
   const keys = tokens.filter(t => t.kind === 'push' && t.len === 33).map(t => t.text);
   const last = tokens[tokens.length - 1];
@@ -235,7 +235,7 @@ export function describeUnlockScript(bytes) {
 
   if (tail === 'OP_CHECKMULTISIG' || tail === 'OP_CHECKMULTISIGVERIFY') {
     const m = tokens[0]?.kind === 'smallnum' ? tokens[0].n : null;
-    const n = tokens[tokens.length - 2]?.kind === 'smallnum' ? tokens[tokens.length - 2].n : null;
+    const n = tokens[tokens.length - 2]?.kind === 'smallnum' ? (tokens[tokens.length - 2] as Extract<Token, { kind: 'smallnum' }>).n : null;
     return {
       kind: 'multisig',
       keys,

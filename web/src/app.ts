@@ -1,12 +1,19 @@
-import { buildStakerUnlockBytes, clean, NETWORKS, pickWalletAddresses, verify } from './lock.js';
-import { renderResult } from './render.js';
+import { buildStakerUnlockBytes, clean, NETWORKS, pickWalletAddresses, verify } from './lock.ts';
+import type { WalletAddresses } from './lock.ts';
+import { renderResult } from './render.ts';
+import type { NetworkName, VerifyInput } from './types.ts';
 
-const $ = id => document.getElementById(id);
-const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+type FieldId = 'bondIndex' | 'stxAddress' | 'pubkey' | 'expected' | 'heightOverride';
 
-// ---------------------------------------------------------------- wallet
+const $ = ((id: string) => document.getElementById(id)) as {
+  (id: 'network'): HTMLSelectElement;
+  (id: FieldId): HTMLInputElement;
+  (id: 'verifyBtn' | 'connectBtn'): HTMLButtonElement;
+  (id: string): HTMLElement;
+};
+const esc = (s: unknown) => String(s).replace(/[&<>"]/g, c => (({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }) as Record<string, string>)[c]);
 
-async function connectLeather() {
+async function connectLeather(): Promise<WalletAddresses> {
   const provider = window.LeatherProvider;
   if (!provider) {
     throw new Error('Leather was not detected in this browser. Install or unlock the extension and reload.');
@@ -15,8 +22,6 @@ async function connectLeather() {
   const res = await provider.request('getAddresses');
   const picked = pickWalletAddresses(res?.result?.addresses ?? []);
 
-  // Only a reply with nothing usable in it is an error. A partial one still
-  // saves the staker a transcription, and the rest of the form is typeable.
   if (picked.missing.length === 2) {
     throw new Error('Leather returned neither a Stacks address nor a Bitcoin public key. Unlock the extension and try again, or fill the fields in by hand.');
   }
@@ -24,9 +29,8 @@ async function connectLeather() {
   return picked;
 }
 
-/** What the wallet could not supply, and what to do about it. */
-function walletNotes(picked) {
-  const notes = [];
+function walletNotes(picked: WalletAddresses): string[] {
+  const notes: string[] = [];
 
   if (picked.missing.includes('stx')) {
     notes.push(
@@ -50,11 +54,8 @@ function walletNotes(picked) {
   return notes;
 }
 
-// ---------------------------------------------------------------- form
-
-/** Collect and validate the form into the shape `verify` wants. */
-function readForm() {
-  const network = $('network').value;
+function readForm(): { input: VerifyInput; warnings: string[] } {
+  const network = $('network').value as NetworkName;
   const bondRaw = $('bondIndex').value.trim();
   const stxAddress = $('stxAddress').value.trim();
   const expected = $('expected').value.trim();
@@ -67,7 +68,7 @@ function readForm() {
   if (!/^S[PTMN][0-9A-Z]{37,}/.test(stxAddress.split('.')[0])) throw new Error(`"${stxAddress}" does not look like a Stacks address.`);
 
   const expectedPrefixes = NETWORKS[network].prefixes;
-  const warnings = [];
+  const warnings: string[] = [];
   if (!expectedPrefixes.some(p => stxAddress.startsWith(p))) {
     warnings.push(
       `The staker address starts with ${stxAddress.slice(0, 2)}, but ${NETWORKS[network].label} uses ` +
@@ -95,28 +96,24 @@ function readForm() {
   };
 }
 
-// ---------------------------------------------------------------- wiring
-
-function setNetworkBadge() {
-  const net = NETWORKS[$('network').value];
+function setNetworkBadge(): void {
+  const net = NETWORKS[$('network').value as NetworkName];
   $('netBadge').className = `badge ${net.badge}`;
   $('netBadgeText').textContent = net.label;
   $('expected').placeholder = `${net.hrp}1… or the 34-byte output script hex`;
 }
 
-function showError(msg) {
+function showError(msg: string): void {
   const el = $('formErr');
   el.innerHTML = msg;
   el.hidden = false;
 }
 
-function main() {
+function main(): void {
   setNetworkBadge();
 
   $('network').addEventListener('change', setNetworkBadge);
-  // A wallet-filled field is marked until the user edits it, so it is always clear
-  // which values came from the extension and which were typed.
-  for (const id of ['stxAddress', 'pubkey']) {
+  for (const id of ['stxAddress', 'pubkey'] as const) {
     $(id).addEventListener('input', () => $(id).classList.remove('prefilled'));
   }
 
@@ -127,8 +124,6 @@ function main() {
     try {
       const w = await connectLeather();
 
-      // Fill only what came back — an absent field must stay empty and editable
-      // rather than being blanked out or marked as coming from the wallet.
       if (w.stxAddress) {
         $('stxAddress').value = w.stxAddress;
         $('stxAddress').classList.add('prefilled');
@@ -149,14 +144,12 @@ function main() {
       $('walletNote').innerHTML = notes.join('<br /><br />');
       $('walletNote').hidden = notes.length === 0;
 
-      // Leather's own network decides the address flavour; align the selector to it
-      // rather than letting a mainnet key be checked against a regtest bond.
       if (w.networkGuess && $('network').value !== w.networkGuess) {
         $('network').value = w.networkGuess;
         setNetworkBadge();
       }
     } catch (e) {
-      showError(esc(e.message || String(e)));
+      showError(esc((e as Error).message || String(e)));
     } finally {
       btn.disabled = false;
       btn.textContent = 'Connect Leather';
@@ -168,7 +161,7 @@ function main() {
     $('connectBtn').hidden = false;
     $('disconnectBtn').hidden = true;
     $('walletNote').hidden = true;
-    for (const id of ['stxAddress', 'pubkey']) {
+    for (const id of ['stxAddress', 'pubkey'] as const) {
       $(id).value = '';
       $(id).classList.remove('prefilled');
     }
@@ -181,10 +174,10 @@ function main() {
   });
 
   document.addEventListener('click', async ev => {
-    const btn = ev.target.closest('[data-copy]');
+    const btn = (ev.target as Element).closest<HTMLElement>('[data-copy]');
     if (!btn) return;
     try {
-      await navigator.clipboard.writeText($(btn.dataset.copy).textContent);
+      await navigator.clipboard.writeText($(btn.dataset.copy!).textContent);
       const was = btn.textContent;
       btn.textContent = 'Copied';
       btn.classList.add('copied');
@@ -192,20 +185,18 @@ function main() {
         btn.textContent = was;
         btn.classList.remove('copied');
       }, 1400);
-    } catch {
-      /* clipboard denied — the value is selectable by hand */
-    }
+    } catch {}
   });
 
   $('verifyBtn').addEventListener('click', async () => {
     $('formErr').hidden = true;
     $('results').hidden = true;
 
-    let form;
+    let form: { input: VerifyInput; warnings: string[] };
     try {
       form = readForm();
     } catch (e) {
-      showError(esc(e.message || String(e)));
+      showError(esc((e as Error).message || String(e)));
       return;
     }
 
@@ -221,7 +212,7 @@ function main() {
       renderResult(result);
     } catch (e) {
       showError(
-        `${esc(e.message || String(e))}<br /><br />` +
+        `${esc((e as Error).message || String(e))}<br /><br />` +
           `If the API is unreachable, check that <code>${esc(NETWORKS[form.input.network].api)}</code> ` +
           'is up and that the bond exists on that network.'
       );
