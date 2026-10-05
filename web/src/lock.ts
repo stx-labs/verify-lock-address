@@ -263,6 +263,23 @@ export async function verify(
   validateInput(input);
   if (signal?.aborted) throw cancelledError();
 
+  const reads = new AbortController();
+  const cancel = () => reads.abort();
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    return await readAndCompare(input, progress, timeoutMs, reads.signal);
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+    reads.abort();
+  }
+}
+
+async function readAndCompare(
+  input: VerifyInput,
+  progress: (message: string) => void,
+  timeoutMs: number,
+  signal: AbortSignal
+): Promise<VerifyResult> {
   const net = NETWORKS[input.network];
   const notes: string[] = [];
 
@@ -330,7 +347,7 @@ export async function verify(
   );
   if (!contractRead.ok) throw readFailure('construct-lockup-output-script', contractRead.error);
   const contractScript = contractRead.value;
-  if (signal?.aborted) throw cancelledError();
+  if (signal.aborted) throw cancelledError();
 
   const agree = sdkScript === contractScript;
   const address = outputScriptToAddress(contractScript, net.hrp);

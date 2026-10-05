@@ -456,6 +456,15 @@ test('a missing bond or a failed lockup-script read fails fast, without waiting 
   }
 });
 
+test('a verification that fails early aborts the reads it left in flight', async () => {
+  const stub = makeStub({ bonds: [], hang: ['pox'] });
+  globalThis.fetch = stub.fetch;
+  await assert.rejects(verify(passing(), () => {}, { timeoutMs: 5_000 }), /does not exist/);
+  const pox = stub.requests.filter(r => r.url.endsWith('/v2/pox'));
+  assert.equal(pox.length, 1);
+  assert.ok(pox[0].signal.aborted, 'the /v2/pox read was aborted');
+});
+
 test('a cancelled verification aborts its requests and rejects at once', async () => {
   for (const hang of [['get-protocol-bond', 'pox'], ['construct-lockup-output-script']]) {
     const stub = makeStub({ hang });
