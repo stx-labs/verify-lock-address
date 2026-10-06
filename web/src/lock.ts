@@ -436,10 +436,13 @@ export function buildStakerUnlockBytes(form: UnlockForm): StakerUnlock {
     };
   }
 
+  assertNoPrivateKey(form.rawHex);
   const raw = clean((form.rawHex ?? '').replace(/\s+/g, ''));
   if (!raw) throw new Error('Paste the staker-unlock-bytes hex.');
   if (!HEX_RE.test(raw) || raw.length % 2) throw new Error('staker-unlock-bytes must be an even-length hex string.');
-  return { unlockBytes: hexToBytes(raw), altUnlockBytes: null, altLabel: '', ambiguousKeysConfirmed: false };
+  const unlockBytes = hexToBytes(raw);
+  const ambiguousKeysConfirmed = approveAmbiguous(describeUnlockScript(unlockBytes).keys.map(normalizeKey), form);
+  return { unlockBytes, altUnlockBytes: null, altLabel: '', ambiguousKeysConfirmed };
 }
 
 const HRP_NETWORK: Record<string, NetworkName | undefined> = { bc: 'mainnet', bcrt: 'private-1' };

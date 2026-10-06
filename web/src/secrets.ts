@@ -107,7 +107,7 @@ const NOT_KEY_MATERIAL = /[^0-9A-Za-z]/g;
 
 export const AMBIGUOUS_KEY_RE = /^0[23][0-9a-fA-F]{62}01$/;
 
-const PUBLIC_HEX_RE = /^(0[23][0-9a-f]{64}|(0020|5120)[0-9a-f]*)$/i;
+const PUBLIC_HEX_RE = /^(0[23]|0020|5120)[0-9a-f]{64}$/i;
 const RAW_KEY_LENGTH = 64;
 const MAX_PADDED_KEY_LENGTH = 69;
 

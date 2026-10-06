@@ -282,7 +282,7 @@ test('expected input is shown back only once decoded into a standard script temp
   for (const [expected, reason] of [
     ['e9873d79c6d87dc0fb6a5778633389f4453213303da61f20bd67fc233aa332', 'unreadable'],
     ['00', 'unreadable'],
-    [`0020${'ab'.repeat(31)}`, 'unreadable'],
+    [`0020${'ab'.repeat(33)}`, 'unreadable'],
     ['37Rf1c6VoRDVNBXVuiiqLZdLehvksYa4Yf', 'unreadable'],
     ['xpub6BuKrNqTrGfsy8VAAdUW2KCxbHywuSKjg7hZuAXERXDv7GfuxUgUWdVRKNsgujcwdjEHCjaXWouPKi1m5gMgdWX8JpRcyMkrSxPe4Da3Lx8', 'unreadable'],
     [`0014${'11'.repeat(20)}`, 'mismatch'],
