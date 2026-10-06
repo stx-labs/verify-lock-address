@@ -1,3 +1,4 @@
+import { live } from './helpers/offline.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -9,9 +10,11 @@ import {
   outputScriptToAddress,
   sortKeysBip67,
   verify,
-  wshOutputScript,
 } from '../web/src/lock.ts';
+import { p2wshScript } from '../web/src/address.ts';
 import { annotate, describeUnlockScript, disassemble, tokenText } from '../web/src/script-view.ts';
+import { computeVerdict } from '../web/src/verdict.ts';
+import { reachable, skipOnTransient } from './helpers/live.mjs';
 
 // The worked example from the lock-address validation doc: a 1-of-2 multisig on
 // bond 106, private-1. Every published intermediate value is pinned here.
@@ -103,22 +106,23 @@ test('P2WSH address derivation is HRP-driven', () => {
   assert.throws(() => outputScriptToAddress('0020ab', 'bc'), /not a P2WSH output script/);
 });
 
-// Live cross-check against private-1. Skipped when the API is unreachable so the
-// pure tests still run offline.
 test('bond 106 on private-1 reproduces the documented address', async t => {
-  const reachable = await fetch('https://api.private-1.hiro.so/v2/pox', { signal: AbortSignal.timeout(8000) })
-    .then(r => r.ok)
-    .catch(() => false);
-  if (!reachable) return t.skip('private-1 API unreachable');
+  if (!(await reachable(t, 'https://api.private-1.hiro.so/v2/pox'))) return;
 
-  const result = await verify({
-    network: 'private-1',
-    bondIndex: 106,
-    stxAddress: STX,
-    unlockBytes: hexToBytes(UNLOCK_HEX),
-    expected: ADDRESS,
-  });
+  const result = await skipOnTransient(t, () =>
+    live(() =>
+      verify({
+        network: 'private-1',
+        bondIndex: 106,
+        stxAddress: STX,
+        unlockBytes: hexToBytes(UNLOCK_HEX),
+        expected: ADDRESS,
+      })
+    )
+  );
+  if (!result) return;
 
+  assert.equal(result.mode, 'multi');
   assert.equal(result.earlyUnlockBytes, EARLY);
   assert.equal(result.derivedHeight, 4690);
   assert.equal(result.unlockHeight, 4690);
@@ -126,9 +130,15 @@ test('bond 106 on private-1 reproduces the documented address', async t => {
   assert.equal(result.contractScript, OUTPUT);
   assert.equal(result.agree, true);
   assert.equal(result.address, ADDRESS);
-  assert.equal(result.comparison.match, true);
+  assert.deepEqual(result.comparison, { match: true, reason: 'match', display: ADDRESS });
+  assert.deepEqual(result.checks, [
+    { id: 'script', status: 'pass', reason: 'agree' },
+    { id: 'expected', status: 'pass', reason: 'match' },
+    { id: 'tail', status: 'pass', reason: 'ok' },
+  ]);
+  assert.deepEqual(computeVerdict(result), { state: 'match', check: null });
   assert.equal(result.tail.label, '1-of-2');
-  assert.equal(wshOutputScript(result.lockScript), OUTPUT);
+  assert.equal(p2wshScript(result.lockScript), OUTPUT);
 
   // The three segments must tile the script exactly — the viewer's offsets depend on it.
   const early = hexToBytes(result.earlyUnlockBytes);

@@ -1,12 +1,19 @@
 import { bech32 } from '@scure/base';
-import { buildLockScript, buildUnlockScript, computeBondUnlockHeight, fetchPoxInfo } from '@stacks/bitcoin-staking';
-import { bytesToHex, hexToBytes } from '@stacks/common';
+import { buildLockScript, buildUnlockScript, computeBondUnlockHeight, fetchPoxInfo, firstPox5RewardCycle } from '@stacks/bitcoin-staking';
+import type { PoxInfo } from '@stacks/bitcoin-staking';
+import { hexToBytes } from '@stacks/common';
 import { STACKS_MAINNET, STACKS_TESTNET } from '@stacks/network';
-import { Cl, cvToValue, fetchCallReadOnlyFunction } from '@stacks/transactions';
-import { sha256 } from '@noble/hashes/sha2.js';
+import { Cl, fetchCallReadOnlyFunction, validateStacksAddress } from '@stacks/transactions';
+import type { ClarityValue } from '@stacks/transactions';
 
+import { p2wshScript, readScriptTarget, targetNetworkMismatch } from './address.ts';
+import { decodeReply, isHeight, POX5_REPLIES } from './clarity.ts';
+import type { Pox5Read, Pox5Reply } from './clarity.ts';
 import { describeUnlockScript } from './script-view.ts';
-import type { Alternate, Comparison, Network, NetworkName, VerifyInput, VerifyResult } from './types.ts';
+import type { Comparison, ErrorLike, Network, NetworkName, Settled, VerifyFacts, VerifyInput, VerifyResult } from './types.ts';
+import { deriveChecks } from './verdict.ts';
+
+type Fetch = (url: string, init?: RequestInit) => Promise<Response>;
 
 export interface UnlockForm {
   mode: string;
@@ -61,10 +68,16 @@ export const NETWORKS: Record<NetworkName, Network> = {
   },
 };
 
+export const READ_TIMEOUT_MS = 15_000;
+
 export const PUBKEY_RE = /^(0x)?0[23][0-9a-fA-F]{64}$/;
 export const HEX_RE = /^(0x)?[0-9a-fA-F]*$/;
 
 export const clean = (s: string | null | undefined) => (s || '').trim().replace(/^0x/i, '');
+
+export const MAX_UNLOCK_BYTES = 683;
+
+const isBondIndex = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
 
 export function buildMultisigUnlockScript(pubkeys: string[], threshold: number): Uint8Array {
   if (pubkeys.length < 1 || pubkeys.length > 16) {
@@ -99,38 +112,212 @@ export const sortKeysBip67 = (keys: string[]) => [...keys].map(clean).sort((a, b
 export function outputScriptToAddress(scriptHex: string, hrp: string): string {
   const s = hexToBytes(clean(scriptHex));
   if (s.length !== 34 || s[0] !== 0x00 || s[1] !== 0x20) {
-    throw new Error(`not a P2WSH output script: ${scriptHex}`);
+    throw new Error('not a P2WSH output script');
   }
   return bech32.encode(hrp, [0, ...bech32.toWords(s.slice(2))], 256);
 }
 
-export const wshOutputScript = (lockScript: Uint8Array) => `0020${bytesToHex(sha256(lockScript))}`;
+const NO_REASON = 'the read failed without giving a reason';
 
-export async function verify(input: VerifyInput, progress: (message: string) => void = () => {}): Promise<VerifyResult> {
+const errorText = (e: any): string => {
+  if (e === undefined || e === null || e === '') return NO_REASON;
+  return String(e instanceof Error || typeof e?.message === 'string' ? e.message : e).slice(0, 240) || NO_REASON;
+};
+
+const isErrorLike = (e: any): e is ErrorLike => typeof e === 'object' && e !== null && typeof e.message === 'string' && e.message !== '';
+
+export function readFailure(read: string, error: unknown): ErrorLike {
+  if (isErrorLike(error)) return error;
+  return new Error(`${read} failed: ${errorText(error)}`);
+}
+
+export function errorSignature(e: any): { name: string; code: string } {
+  const seen = new Set<object>();
+  const codes: string[] = [];
+  const walk = (err: any) => {
+    if (!err || typeof err !== 'object' || seen.has(err)) return;
+    seen.add(err);
+    if (typeof err.code === 'string') codes.push(err.code);
+    if (Array.isArray(err.errors)) err.errors.forEach(walk);
+    walk(err.cause);
+  };
+  walk(e);
+  return { name: typeof e?.name === 'string' ? e.name : 'Error', code: codes[0] ?? '' };
+}
+
+const CONTRACT_NAME_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,39}$/;
+
+export function isStacksPrincipal(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const [address, name, ...rest] = value.split('.');
+  if (rest.length || !/^S[PTMN][0-9A-Z]+$/.test(address)) return false;
+  let valid = false;
+  try {
+    valid = validateStacksAddress(address);
+  } catch {
+    valid = false;
+  }
+  return valid && (name === undefined || CONTRACT_NAME_RE.test(name));
+}
+
+export function validatePoxInfo(poxInfo: PoxInfo): PoxInfo {
+  const fail: () => never = () => {
+    throw new Error('/v2/pox returned cycle parameters this page cannot use');
+  };
+  if (!poxInfo || typeof poxInfo !== 'object') fail();
+  const { firstBurnchainBlockHeight, rewardCycleLength, prepareCycleLength } = poxInfo;
+  if (!isHeight(firstBurnchainBlockHeight)) fail();
+  if (!Number.isSafeInteger(rewardCycleLength) || rewardCycleLength <= 0) fail();
+  if (!Number.isSafeInteger(prepareCycleLength) || prepareCycleLength <= 0 || prepareCycleLength >= rewardCycleLength) fail();
+  if (!Array.isArray(poxInfo.contractVersions)) fail();
+  let firstCycle;
+  try {
+    firstCycle = firstPox5RewardCycle(poxInfo);
+  } catch {
+    fail();
+  }
+  if (firstCycle !== undefined && !isHeight(firstCycle)) fail();
+  return poxInfo;
+}
+
+export function compareExpected(expectedInput: unknown, contractScript: string, hrp: string): Comparison | null {
+  const target = readScriptTarget(expectedInput);
+  if (target.kind === 'empty') return null;
+  const display = target.display ?? null;
+  if (target.kind === 'invalid') return { match: false, reason: target.reason, display };
+  if (targetNetworkMismatch(target, hrp)) return { match: false, reason: 'wrong-network', display };
+  return target.script === contractScript.toLowerCase()
+    ? { match: true, reason: 'match', display }
+    : { match: false, reason: 'mismatch', display };
+}
+
+const seconds = (ms: number) => `${Math.round(ms / 100) / 10} s`;
+
+export function cancelledError(): Error {
+  const e = new Error('The verification was cancelled because the inputs changed.');
+  e.name = 'AbortError';
+  return e;
+}
+
+export function timedRead<T>(
+  what: string,
+  timeoutMs: number,
+  run: (fetch: Fetch) => T | Promise<T>,
+  outer: AbortSignal | null = null
+): Promise<T> {
+  const controller = new AbortController();
+  const reason = new Error(`${what} did not answer within ${seconds(timeoutMs)}`);
+  reason.name = 'TimeoutError';
+  const timer = setTimeout(() => controller.abort(reason), timeoutMs);
+  const cancel = () => controller.abort(cancelledError());
+  if (outer?.aborted) cancel();
+  else outer?.addEventListener('abort', cancel, { once: true });
+  const fetch: Fetch = (url, init = {}) => globalThis.fetch(url, { ...init, signal: controller.signal });
+  let running: Promise<T>;
+  try {
+    running = Promise.resolve(run(fetch));
+  } catch (e) {
+    running = Promise.reject(e);
+  }
+  const done = () => {
+    clearTimeout(timer);
+    outer?.removeEventListener('abort', cancel);
+  };
+  return running.then(
+    value => {
+      done();
+      return value;
+    },
+    error => {
+      done();
+      throw controller.signal.aborted ? controller.signal.reason : error;
+    }
+  );
+}
+
+const settle = <T>(promise: Promise<T>): Promise<Settled<T>> =>
+  promise.then(
+    (value): Settled<T> => ({ ok: true, value }),
+    (error): Settled<T> => ({ ok: false, error })
+  );
+
+function validateInput(input: VerifyInput): void {
+  if (!input || typeof input !== 'object' || typeof input.network !== 'string' || !Object.hasOwn(NETWORKS, input.network)) {
+    throw new Error('Choose a network this page supports.');
+  }
+  if (!isBondIndex(input.bondIndex)) throw new Error('The bond index must be a whole number, 0 or above.');
+  if (!isStacksPrincipal(input.stxAddress)) throw new Error('The staker principal is not a valid Stacks address.');
+  if (input.heightOverride !== undefined && (!Number.isSafeInteger(input.heightOverride) || input.heightOverride <= 0)) {
+    throw new Error('The unlock height override must be a whole number above 0.');
+  }
+  if (!(input.unlockBytes instanceof Uint8Array) || !input.unlockBytes.length || input.unlockBytes.length > MAX_UNLOCK_BYTES) {
+    throw new Error('The staker-unlock-bytes are missing or too long.');
+  }
+}
+
+export async function verify(
+  input: VerifyInput,
+  progress: (message: string) => void = () => {},
+  { timeoutMs = READ_TIMEOUT_MS, signal = null }: { timeoutMs?: number; signal?: AbortSignal | null } = {}
+): Promise<VerifyResult> {
+  validateInput(input);
+  if (signal?.aborted) throw cancelledError();
+
+  const reads = new AbortController();
+  const cancel = () => reads.abort();
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    return await readAndCompare(input, progress, timeoutMs, reads.signal);
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+    reads.abort();
+  }
+}
+
+async function readAndCompare(
+  input: VerifyInput,
+  progress: (message: string) => void,
+  timeoutMs: number,
+  signal: AbortSignal
+): Promise<VerifyResult> {
   const net = NETWORKS[input.network];
-  const network = { ...net.stacks, client: { baseUrl: net.api } };
   const notes: string[] = [];
 
   const unlockBytes = input.unlockBytes;
   const tail = describeUnlockScript(unlockBytes);
+  const mode = input.mode === 'multi' || tail.kind === 'multisig' ? 'multi' : 'single';
+  const client = (fetch: Fetch) => ({ baseUrl: net.api, fetch });
 
-  progress('reading pox info…');
-  const poxInfo = await fetchPoxInfo({ network });
-  const derivedHeight = computeBondUnlockHeight({ bondIndex: input.bondIndex, poxInfo });
-  const unlockHeight = input.heightOverride ?? derivedHeight;
+  const read = <T>(what: string, run: (fetch: Fetch) => T | Promise<T>) => timedRead(what, timeoutMs, run, signal);
+  const readOnly = <F extends Pox5Read>(functionName: F, functionArgs: ClarityValue[]): Promise<Pox5Reply<F>> =>
+    read(functionName, fetch =>
+      fetchCallReadOnlyFunction({
+        contractAddress: net.boot,
+        contractName: 'pox-5',
+        functionName,
+        functionArgs,
+        senderAddress: net.boot,
+        network: net.stacks,
+        client: client(fetch),
+      }).then(cv => decodeReply(cv, POX5_REPLIES[functionName], functionName))
+    );
 
   progress(`reading bond ${input.bondIndex}…`);
-  const bondCv = await fetchCallReadOnlyFunction({
-    contractAddress: net.boot,
-    contractName: 'pox-5',
-    functionName: 'get-protocol-bond',
-    functionArgs: [Cl.uint(input.bondIndex)],
-    senderAddress: net.boot,
-    network,
-  });
-  const bondValue = cvToValue(bondCv);
-  if (!bondValue?.value) throw new Error(`bond ${input.bondIndex} does not exist on ${net.label}`);
-  const earlyUnlockBytes = clean(bondValue.value['early-unlock-bytes'].value);
+  const bondPending = settle(readOnly('get-protocol-bond', [Cl.uint(input.bondIndex)]));
+  const poxPending = settle(read('/v2/pox', fetch => fetchPoxInfo({ network: net.stacks, client: client(fetch) })));
+
+  const bondRead = await bondPending;
+  if (!bondRead.ok) throw readFailure('get-protocol-bond', bondRead.error);
+  if (bondRead.value === null) throw new Error(`bond ${input.bondIndex} does not exist on ${net.label}`);
+  const earlyUnlockBytes = bondRead.value['early-unlock-bytes'];
+
+  const poxRead = await poxPending;
+  if (!poxRead.ok) throw readFailure('/v2/pox', poxRead.error);
+  const poxInfo = validatePoxInfo(poxRead.value);
+  const derivedHeight = computeBondUnlockHeight({ bondIndex: input.bondIndex, poxInfo });
+  if (!isHeight(derivedHeight)) throw new Error('The unlock height could not be derived from /v2/pox.');
+  const unlockHeight = input.heightOverride ?? derivedHeight;
+  const heightOverridden = input.heightOverride !== undefined && input.heightOverride !== derivedHeight;
 
   progress('building the lock script…');
   let lockScript: Uint8Array;
@@ -147,71 +334,46 @@ export async function verify(input: VerifyInput, progress: (message: string) => 
       validateEarlyUnlockBytes: false,
     });
   }
-  const sdkScript = wshOutputScript(lockScript);
+  const sdkScript = p2wshScript(lockScript);
 
   progress('asking pox-5 for the same script…');
-  const onchainCv = await fetchCallReadOnlyFunction({
-    contractAddress: net.boot,
-    contractName: 'pox-5',
-    functionName: 'construct-lockup-output-script',
-    functionArgs: [
+  const contractRead = await settle(
+    readOnly('construct-lockup-output-script', [
       Cl.principal(input.stxAddress),
       Cl.uint(unlockHeight),
       Cl.buffer(unlockBytes),
       Cl.bufferFromHex(earlyUnlockBytes),
-    ],
-    senderAddress: net.boot,
-    network,
-  });
-  const d = cvToValue(onchainCv);
-  const contractScript = clean(String(d.value?.value ?? d.value ?? d));
+    ])
+  );
+  if (!contractRead.ok) throw readFailure('construct-lockup-output-script', contractRead.error);
+  const contractScript = contractRead.value;
+  if (signal.aborted) throw cancelledError();
 
   const agree = sdkScript === contractScript;
   const address = outputScriptToAddress(contractScript, net.hrp);
+  const comparison = compareExpected(input.expected ?? '', contractScript, net.hrp);
 
-  let alternate: Alternate | null = null;
-  if (input.altUnlockBytes && bytesToHex(input.altUnlockBytes) !== bytesToHex(unlockBytes)) {
-    try {
-      const altLock = buildLockScript({
-        stxAddress: input.stxAddress,
-        unlockHeight,
-        unlockBytes: input.altUnlockBytes,
-        earlyUnlockBytes,
-        validateEarlyUnlockBytes: false,
-      });
-      alternate = { label: input.altLabel, address: outputScriptToAddress(wshOutputScript(altLock), net.hrp) };
-    } catch {}
-  }
-
-  let comparison: Comparison | null = null;
-  if (input.expected) {
-    const want = clean(input.expected).toLowerCase();
-    comparison = {
-      supplied: input.expected.trim(),
-      match: want === contractScript.toLowerCase() || input.expected.trim() === address,
-    };
-  }
-
-  return {
+  const facts: VerifyFacts = {
     net,
+    mode,
     tail,
     unlockBytes,
     earlyUnlockBytes,
     poxInfo,
     derivedHeight,
     unlockHeight,
-    heightOverridden: input.heightOverride !== undefined && input.heightOverride !== derivedHeight,
+    heightOverridden,
     lockScript,
     sdkScript,
     contractScript,
     agree,
     address,
-    alternate,
     comparison,
     notes,
     bondIndex: input.bondIndex,
     stxAddress: input.stxAddress,
   };
+  return { ...facts, checks: deriveChecks(facts) };
 }
 
 export function buildStakerUnlockBytes(form: UnlockForm): StakerUnlock {

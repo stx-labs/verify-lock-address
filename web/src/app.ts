@@ -1,4 +1,6 @@
-import { buildStakerUnlockBytes, clean, NETWORKS, pickWalletAddresses, verify } from './lock.ts';
+import { fill, h, paragraphs } from './dom.ts';
+import type { Child } from './dom.ts';
+import { buildStakerUnlockBytes, errorSignature, isStacksPrincipal, NETWORKS, pickWalletAddresses, verify } from './lock.ts';
 import type { WalletAddresses } from './lock.ts';
 import { renderResult } from './render.ts';
 import type { NetworkName, VerifyInput } from './types.ts';
@@ -11,7 +13,31 @@ const $ = ((id: string) => document.getElementById(id)) as {
   (id: 'verifyBtn' | 'connectBtn'): HTMLButtonElement;
   (id: string): HTMLElement;
 };
-const esc = (s: unknown) => String(s).replace(/[&<>"]/g, c => (({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }) as Record<string, string>)[c]);
+
+const FIELD_LABELS = {
+  bondIndex: 'bond index',
+  heightOverride: 'unlock height override',
+};
+
+let generation = 0;
+let running: AbortController | null = null;
+
+function setBusy(busy: boolean): void {
+  $('paneLoading').hidden = !busy;
+  $('verifyBtn').disabled = busy;
+  if (busy) fill($('verifyBtn'), h('span', { class: 'spinner' }), 'Verifying');
+  else $('verifyBtn').textContent = 'Verify lock address';
+}
+
+function invalidate(): void {
+  generation += 1;
+  if (running) {
+    running.abort();
+    running = null;
+    setBusy(false);
+  }
+  $('results').hidden = true;
+}
 
 async function connectLeather(): Promise<WalletAddresses> {
   const provider = window.LeatherProvider;
@@ -29,24 +55,27 @@ async function connectLeather(): Promise<WalletAddresses> {
   return picked;
 }
 
-function walletNotes(picked: WalletAddresses): string[] {
-  const notes: string[] = [];
+function walletNotes(picked: WalletAddresses): Child[] {
+  const notes: Child[] = [];
 
   if (picked.missing.includes('stx')) {
-    notes.push(
-      'Leather returned no Stacks address, so <strong>enter the staker principal yourself</strong>. ' +
-        'For a multisig staker it is the vault&#39;s SM…/SN… principal, which the extension would not know anyway.'
-    );
+    notes.push([
+      'Leather returned no Stacks address, so ',
+      h('strong', null, 'enter the staker principal yourself'),
+      ": the Stacks principal the staking app will register with. That is normally the account's single-key " +
+        'SP… (mainnet) / ST… (private-1) address — a Bitcoin multisig vault has no Stacks principal of its own.',
+    ]);
   }
   if (picked.missing.includes('btc')) {
-    notes.push(
-      'Leather returned no Bitcoin public key, so <strong>paste the compressed key yourself</strong> — ' +
-        'the 33-byte key whose signature will unlock the timelocked output.'
-    );
+    notes.push([
+      'Leather returned no Bitcoin public key, so ',
+      h('strong', null, 'paste the compressed key yourself'),
+      ' — the 33-byte key whose signature will unlock the timelocked output.',
+    ]);
   }
   if (picked.taprootOnly) {
     notes.push(
-      `The only Bitcoin key returned is a taproot (p2tr) one — the untweaked internal key. The lockup ` +
+      'The only Bitcoin key returned is a taproot (p2tr) one — the untweaked internal key. The lockup ' +
         'tail is spent as a P2WSH input, so it normally carries the segwit v0 key from the p2wpkh ' +
         'account. Check this is the key you can actually sign with before you fund anything.'
     );
@@ -54,29 +83,38 @@ function walletNotes(picked: WalletAddresses): string[] {
   return notes;
 }
 
+function readWholeNumber<E>(id: 'bondIndex' | 'heightOverride', { min, empty }: { min: number; empty: () => E }): number | E {
+  const el = $(id);
+  if (el.validity?.badInput) throw new Error(`The ${FIELD_LABELS[id]} must be a whole number, ${min} or above.`);
+  if (!el.value.trim()) return empty();
+  const n = typeof el.valueAsNumber === 'number' && !Number.isNaN(el.valueAsNumber) ? el.valueAsNumber : Number(el.value.trim());
+  if (!Number.isSafeInteger(n) || n < min) throw new Error(`The ${FIELD_LABELS[id]} must be a whole number, ${min} or above.`);
+  return n;
+}
+
 function readForm(): { input: VerifyInput; warnings: string[] } {
   const network = $('network').value as NetworkName;
-  const bondRaw = $('bondIndex').value.trim();
+  if (!Object.hasOwn(NETWORKS, network)) throw new Error('Choose a network this page supports.');
   const stxAddress = $('stxAddress').value.trim();
   const expected = $('expected').value.trim();
-  const overrideRaw = $('heightOverride').value.trim();
 
-  if (!bondRaw) throw new Error('Enter the bond index — the number in /enroll?bondIndex=…');
-  const bondIndex = Number(bondRaw);
-  if (!Number.isInteger(bondIndex) || bondIndex < 0) throw new Error('The bond index must be a whole number, 0 or above.');
+  const bondIndex = readWholeNumber('bondIndex', {
+    min: 0,
+    empty: () => {
+      throw new Error('Enter the bond index — the number in /enroll?bondIndex=…');
+    },
+  });
   if (!stxAddress) throw new Error('Enter the Stacks address of the staker.');
-  if (!/^S[PTMN][0-9A-Z]{37,}/.test(stxAddress.split('.')[0])) throw new Error(`"${stxAddress}" does not look like a Stacks address.`);
+  if (!isStacksPrincipal(stxAddress)) throw new Error('The staker principal does not look like a Stacks address (SP… / ST…).');
+  const heightOverride = readWholeNumber('heightOverride', { min: 1, empty: () => undefined });
 
-  const expectedPrefixes = NETWORKS[network].prefixes;
+  const net = NETWORKS[network];
   const warnings: string[] = [];
-  if (!expectedPrefixes.some(p => stxAddress.startsWith(p))) {
-    warnings.push(
-      `The staker address starts with ${stxAddress.slice(0, 2)}, but ${NETWORKS[network].label} uses ` +
-        `${expectedPrefixes.join(' / ')}. Check the network selector.`
-    );
+  if (!net.prefixes.some(p => stxAddress.startsWith(p))) {
+    warnings.push(`The staker address is not a ${net.label} address (${net.prefixes.join(' / ')}…). Check the network selector.`);
   }
 
-  const { unlockBytes, altUnlockBytes, altLabel } = buildStakerUnlockBytes({
+  const { unlockBytes } = buildStakerUnlockBytes({
     mode: 'single',
     pubkey: $('pubkey').value,
   });
@@ -84,28 +122,42 @@ function readForm(): { input: VerifyInput; warnings: string[] } {
   return {
     input: {
       network,
+      mode: 'single',
       bondIndex,
       stxAddress,
       unlockBytes,
-      altUnlockBytes,
-      altLabel,
       expected: expected || null,
-      heightOverride: overrideRaw ? Number(overrideRaw) : undefined,
+      heightOverride,
     },
     warnings,
   };
 }
 
 function setNetworkBadge(): void {
+  if (!Object.hasOwn(NETWORKS, $('network').value)) return;
   const net = NETWORKS[$('network').value as NetworkName];
   $('netBadge').className = `badge ${net.badge}`;
   $('netBadgeText').textContent = net.label;
   $('expected').placeholder = `${net.hrp}1… or the 34-byte output script hex`;
 }
 
-function showError(msg: string): void {
+const LEATHER_CANCELLED = 4001;
+
+function messageOf(e: any): string {
+  const code = e?.code ?? e?.error?.code;
+  if (code === LEATHER_CANCELLED) return 'You cancelled the request in Leather.';
+  for (const text of [e?.message, e?.error?.message, typeof e === 'string' ? e : null]) {
+    if (typeof text === 'string' && text.trim()) return text;
+  }
+  return 'Something went wrong.';
+}
+
+function showError(error: unknown, ...children: Child[]): void {
   const el = $('formErr');
-  el.innerHTML = msg;
+  fill(el, messageOf(error), children);
+  const { name, code } = errorSignature(error);
+  el.dataset.errorName = name;
+  el.dataset.errorCode = code;
   el.hidden = false;
 }
 
@@ -113,6 +165,13 @@ function main(): void {
   setNetworkBadge();
 
   $('network').addEventListener('change', setNetworkBadge);
+
+  for (const type of ['input', 'change']) {
+    document.addEventListener(type, ev => {
+      if (ev.target instanceof Element && !ev.target.closest('#results')) invalidate();
+    });
+  }
+
   for (const id of ['stxAddress', 'pubkey'] as const) {
     $(id).addEventListener('input', () => $(id).classList.remove('prefilled'));
   }
@@ -124,6 +183,8 @@ function main(): void {
     try {
       const w = await connectLeather();
 
+      invalidate();
+
       if (w.stxAddress) {
         $('stxAddress').value = w.stxAddress;
         $('stxAddress').classList.add('prefilled');
@@ -134,14 +195,14 @@ function main(): void {
       }
 
       $('walletBadge').hidden = false;
-      const label = w.stxAddress || w.btcAddress;
-      $('walletBadgeText').textContent = `${label.slice(0, 6)}…${label.slice(-4)}`;
+      const label = w.stxAddress || w.btcAddress || w.btcPublicKey;
+      $('walletBadgeText').textContent = label ? `${label.slice(0, 6)}…${label.slice(-4)}` : 'Leather';
       $('connectBtn').hidden = true;
       $('disconnectBtn').hidden = false;
       $('formErr').hidden = true;
 
       const notes = walletNotes(w);
-      $('walletNote').innerHTML = notes.join('<br /><br />');
+      fill($('walletNote'), paragraphs(notes));
       $('walletNote').hidden = notes.length === 0;
 
       if (w.networkGuess && $('network').value !== w.networkGuess) {
@@ -149,7 +210,7 @@ function main(): void {
         setNetworkBadge();
       }
     } catch (e) {
-      showError(esc((e as Error).message || String(e)));
+      showError(e);
     } finally {
       btn.disabled = false;
       btn.textContent = 'Connect Leather';
@@ -157,6 +218,7 @@ function main(): void {
   });
 
   $('disconnectBtn').addEventListener('click', () => {
+    invalidate();
     $('walletBadge').hidden = true;
     $('connectBtn').hidden = false;
     $('disconnectBtn').hidden = true;
@@ -173,53 +235,71 @@ function main(): void {
     $('toggleHex').textContent = box.hidden ? 'Show hex' : 'Hide hex';
   });
 
+  const copyTimers = new WeakMap<HTMLElement, ReturnType<typeof setTimeout>>();
   document.addEventListener('click', async ev => {
     const btn = (ev.target as Element).closest<HTMLElement>('[data-copy]');
     if (!btn) return;
+    btn.dataset.label ??= btn.textContent;
     try {
       await navigator.clipboard.writeText($(btn.dataset.copy!).textContent);
-      const was = btn.textContent;
+      clearTimeout(copyTimers.get(btn));
       btn.textContent = 'Copied';
       btn.classList.add('copied');
-      setTimeout(() => {
-        btn.textContent = was;
-        btn.classList.remove('copied');
-      }, 1400);
-    } catch {}
+      copyTimers.set(
+        btn,
+        setTimeout(() => {
+          btn.textContent = btn.dataset.label!;
+          btn.classList.remove('copied');
+        }, 1400)
+      );
+    } catch {
+      btn.blur();
+    }
   });
 
   $('verifyBtn').addEventListener('click', async () => {
     $('formErr').hidden = true;
-    $('results').hidden = true;
+    invalidate();
+    const run = generation;
 
     let form: { input: VerifyInput; warnings: string[] };
     try {
       form = readForm();
     } catch (e) {
-      showError(esc((e as Error).message || String(e)));
+      showError(e);
       return;
     }
 
-    $('paneLoading').hidden = false;
-    $('verifyBtn').disabled = true;
-    $('verifyBtn').innerHTML = '<span class="spinner"></span>Verifying';
+    const controller = new AbortController();
+    running = controller;
+    setBusy(true);
 
     try {
-      const result = await verify(form.input, msg => {
-        $('loadNote').textContent = msg;
-      });
+      const result = await verify(
+        form.input,
+        msg => {
+          if (run === generation) $('loadNote').textContent = msg;
+        },
+        { signal: controller.signal }
+      );
+      if (run !== generation) return;
       result.notes.unshift(...form.warnings);
       renderResult(result);
     } catch (e) {
+      if (run !== generation) return;
       showError(
-        `${esc((e as Error).message || String(e))}<br /><br />` +
-          `If the API is unreachable, check that <code>${esc(NETWORKS[form.input.network].api)}</code> ` +
-          'is up and that the bond exists on that network.'
+        e,
+        h('br'),
+        h('br'),
+        'If the API is unreachable, check that ',
+        h('code', null, NETWORKS[form.input.network].api),
+        ' is up and that the bond exists on that network.'
       );
     } finally {
-      $('paneLoading').hidden = true;
-      $('verifyBtn').disabled = false;
-      $('verifyBtn').textContent = 'Verify lock address';
+      if (run === generation) {
+        running = null;
+        setBusy(false);
+      }
     }
   });
 }

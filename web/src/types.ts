@@ -1,9 +1,13 @@
 import type { PoxInfo } from '@stacks/bitcoin-staking';
 import type { StacksNetwork } from '@stacks/network';
 
+import type { InvalidTargetReason } from './address.ts';
 import type { Tail } from './script-view.ts';
+import type { Check } from './verdict.ts';
 
 export type NetworkName = 'private-1' | 'mainnet';
+
+export type Mode = 'single' | 'multi';
 
 export interface Network {
   label: string;
@@ -15,29 +19,31 @@ export interface Network {
   prefixes: string[];
 }
 
-export interface Alternate {
-  label: string | undefined;
-  address: string;
+export interface ErrorLike {
+  message: string;
 }
 
+export type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
 export interface Comparison {
-  supplied: string;
   match: boolean;
+  reason: 'match' | 'mismatch' | 'wrong-network' | InvalidTargetReason;
+  display: string | null;
 }
 
 export interface VerifyInput {
   network: NetworkName;
+  mode?: Mode;
   bondIndex: number;
   stxAddress: string;
   unlockBytes: Uint8Array;
-  altUnlockBytes?: Uint8Array | null;
-  altLabel?: string;
   expected?: string | null;
   heightOverride?: number;
 }
 
-export interface VerifyResult {
+export interface VerifyFacts {
   net: Network;
+  mode: Mode;
   tail: Tail;
   unlockBytes: Uint8Array;
   earlyUnlockBytes: string;
@@ -50,9 +56,12 @@ export interface VerifyResult {
   contractScript: string;
   agree: boolean;
   address: string;
-  alternate: Alternate | null;
   comparison: Comparison | null;
   notes: string[];
   bondIndex: number;
   stxAddress: string;
+}
+
+export interface VerifyResult extends VerifyFacts {
+  checks: Check[];
 }
