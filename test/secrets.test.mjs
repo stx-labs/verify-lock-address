@@ -90,6 +90,28 @@ test('a raw hex key with stray hex characters glued to it is still refused', () 
   }
 });
 
+test('a long hex run passes only as a list of compressed keys or a script with no secret-sized push', () => {
+  const key = PK_C.slice(2);
+  const refused = {
+    'hex word before a key': `deadbeef${key}`,
+    'padding on both sides': `${'00'.repeat(10)}${key}${'ab'.repeat(5)}`,
+    '32-byte push after a key': `21${PK}20${key}ac`,
+    '64-byte push': `4c40${key}${key}`,
+    'odd length': `a${PK}${PK_C}`,
+    'key list with a non-key chunk': `${PK}04${key}`,
+  };
+  for (const [what, text] of Object.entries(refused)) {
+    assert.equal(classifySecret(text), 'private', what);
+    assert.throws(() => assertNoPrivateKey(text), e => e.message === PRIVATE_KEY_ERROR, what);
+  }
+  for (const text of [`21${PK}ac`, `${PK}${PK_C}${PK_NO_ZERO}`, `5121${PK}21${PK_C}52ae`, '5'.repeat(200)]) {
+    assert.equal(classifySecret(text), null, text);
+  }
+  for (const text of [`21${AMBIGUOUS_PUBKEY}ac`, `${PK}${AMBIGUOUS_PUBKEY}`]) {
+    assert.equal(classifySecret(text), 'ambiguous', text);
+  }
+});
+
 test('a 66-hex value starting 02/03 and ending 01 is ambiguous: allowed only in a key field, refused everywhere else', () => {
   assert.equal(classifySecret(AMBIGUOUS_PUBKEY), 'ambiguous');
   assert.equal(containsAmbiguousKey(AMBIGUOUS_PUBKEY), true);

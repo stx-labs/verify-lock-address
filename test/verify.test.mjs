@@ -13,7 +13,7 @@ import {
   verify,
 } from '../web/src/lock.ts';
 import { computeVerdict } from '../web/src/verdict.ts';
-import { AMBIGUOUS_KEY_ERROR, privateKeyError } from '../web/src/secrets.ts';
+import { AMBIGUOUS_KEY_ERROR, PRIVATE_KEY_ERROR, privateKeyError } from '../web/src/secrets.ts';
 import { embeddings, PRIVATE_KEYS } from './helpers/secrets.mjs';
 import {
   ALLOWLISTED,
@@ -88,6 +88,22 @@ test('verify refuses a private key in any text it is handed, before any request 
         assert.deepEqual(calls.requests, [], `${kind} ${where} in ${field}: nothing sent, /v2/pox included`);
       }
     }
+  }
+});
+
+test('verify refuses unlock bytes that carry a private key, as raw bytes or as text, before any request', async () => {
+  const { hexToBytes } = await import('@stacks/common');
+  const secret = PRIVATE_KEYS['bare 64-hex secret'];
+  const cases = {
+    'raw secret bytes': hexToBytes(secret),
+    'secret pushed in a script': hexToBytes(`20${secret}ac`),
+    'secret after a key': hexToBytes(`21${'02'.padEnd(66, 'ab')}20${secret}ac`),
+    'WIF as text bytes': new TextEncoder().encode(PRIVATE_KEYS['WIF mainnet compressed']),
+  };
+  for (const [what, unlockBytes] of Object.entries(cases)) {
+    const calls = stubApi();
+    await assert.rejects(verify(passing({ unlockBytes })), e => e.message === PRIVATE_KEY_ERROR, what);
+    assert.deepEqual(calls.requests, [], `${what}: nothing sent`);
   }
 });
 
@@ -282,7 +298,7 @@ test('expected input is shown back only once decoded into a standard script temp
   for (const [expected, reason] of [
     ['e9873d79c6d87dc0fb6a5778633389f4453213303da61f20bd67fc233aa332', 'unreadable'],
     ['00', 'unreadable'],
-    [`0020${'ab'.repeat(33)}`, 'unreadable'],
+    [`0020${'ab'.repeat(10)}`, 'unreadable'],
     ['37Rf1c6VoRDVNBXVuiiqLZdLehvksYa4Yf', 'unreadable'],
     ['xpub6BuKrNqTrGfsy8VAAdUW2KCxbHywuSKjg7hZuAXERXDv7GfuxUgUWdVRKNsgujcwdjEHCjaXWouPKi1m5gMgdWX8JpRcyMkrSxPe4Da3Lx8', 'unreadable'],
     [`0014${'11'.repeat(20)}`, 'mismatch'],

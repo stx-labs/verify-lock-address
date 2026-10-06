@@ -708,6 +708,7 @@ test('a typed key shaped like a Stacks private key is held back until the staker
   assert.ok(!doc.body.textContent.replace(doc.getElementById('pubkey').textContent, '').includes(AMBIGUOUS_PUBKEY.slice(10, 40)), 'not shown');
   assert.deepEqual(stub.requests, [], 'nothing sent');
   assert.equal(doc.getElementById('confirmPubkeysBox').hidden, false);
+  assert.equal(doc.activeElement, doc.getElementById('pubkey'), 'the key field is focused');
 
   doc.getElementById('confirmPubkeys').checked = true;
   doc.getElementById('confirmPubkeys').dispatchEvent(new window.Event('change', { bubbles: true }));
@@ -735,6 +736,15 @@ test('a key Leather supplies as a public key needs no confirmation, even when it
   await runVerify(doc);
   assert.equal(doc.getElementById('confirmPubkeysBox').hidden, true);
   assert.equal(doc.getElementById('tPolicy').textContent, 'single key');
+
+  click(doc, 'disconnectBtn');
+  setValue(doc, 'stxAddress', ALLOWLISTED);
+  setValue(doc, 'pubkey', AMBIGUOUS_PUBKEY);
+  stub.requests.length = 0;
+  click(doc, 'verifyBtn');
+  await settle();
+  assert.deepEqual(stub.requests, [], 'after disconnect the same key is no longer trusted');
+  assert.match(doc.getElementById('formErr').textContent, /exactly what a Stacks private key looks like/);
 });
 
 const AMBIGUOUS_2 = '037777777777777777777777777777777777777777777777777777777777777301';

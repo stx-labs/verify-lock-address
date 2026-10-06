@@ -1,7 +1,7 @@
 import { bech32 } from '@scure/base';
 import { buildLockScript, buildUnlockScript, computeBondUnlockHeight, fetchPoxInfo, firstPox5RewardCycle } from '@stacks/bitcoin-staking';
 import type { PoxInfo } from '@stacks/bitcoin-staking';
-import { hexToBytes } from '@stacks/common';
+import { bytesToHex, hexToBytes } from '@stacks/common';
 import { STACKS_MAINNET, STACKS_TESTNET } from '@stacks/network';
 import { Cl, fetchCallReadOnlyFunction, validateStacksAddress } from '@stacks/transactions';
 import type { ClarityValue } from '@stacks/transactions';
@@ -268,6 +268,7 @@ function validateInput(input: VerifyInput): void {
   if (!(input.unlockBytes instanceof Uint8Array) || !input.unlockBytes.length || input.unlockBytes.length > MAX_UNLOCK_BYTES) {
     throw new Error('The staker-unlock-bytes are missing or too long.');
   }
+  assertNoPrivateKey(bytesToHex(input.unlockBytes), new TextDecoder('latin1').decode(input.unlockBytes));
   if (describeUnlockScript(input.unlockBytes).keys.some(isAmbiguousKey) && input.ambiguousKeysConfirmed !== true) {
     throw new Error(AMBIGUOUS_KEY_ERROR);
   }

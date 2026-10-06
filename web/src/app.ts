@@ -178,7 +178,10 @@ function readForm(): { input: VerifyInput; warnings: string[] } {
   try {
     built = buildStakerUnlockBytes({ mode, pubkey: $('pubkey').value, ...provenance });
   } catch (e) {
-    if ((e as Error).message === AMBIGUOUS_KEY_ERROR) $('confirmPubkeysBox').hidden = false;
+    if ((e as Error).message === AMBIGUOUS_KEY_ERROR) {
+      $('confirmPubkeysBox').hidden = false;
+      $('pubkey').focus();
+    }
     throw e;
   }
   const { unlockBytes, ambiguousKeysConfirmed } = built;
@@ -254,6 +257,7 @@ function main(): void {
       const w = await connectLeather();
 
       walletSession += 1;
+      trustedKeys.clear();
       resetConfirmation();
       invalidate();
 
@@ -292,6 +296,7 @@ function main(): void {
 
   $('disconnectBtn').addEventListener('click', () => {
     walletSession += 1;
+    trustedKeys.clear();
     resetConfirmation();
     invalidate();
     $('walletBadge').hidden = true;

@@ -1,5 +1,8 @@
 import { base58 } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { hexToBytes } from '@noble/hashes/utils.js';
+
+import { disassemble } from './script-view.ts';
 
 const BASE58_RUN = /[1-9A-HJ-NP-Za-km-z]+/g;
 
@@ -108,11 +111,40 @@ const NOT_KEY_MATERIAL = /[^0-9A-Za-z]/g;
 export const AMBIGUOUS_KEY_RE = /^0[23][0-9a-fA-F]{62}01$/;
 
 const PUBLIC_HEX_RE = /^(0[23]|0020|5120)[0-9a-f]{64}$/i;
+const COMPRESSED_KEY_RE = /^0[23]/;
 const RAW_KEY_LENGTH = 64;
 const MAX_PADDED_KEY_LENGTH = 69;
+const COMPRESSED_KEY_HEX_LENGTH = 66;
+const COMPRESSED_KEY_BYTES = 33;
+const SECRET_BYTES = 32;
+
+function keyList(run: string): string[] | null {
+  if (run.length % COMPRESSED_KEY_HEX_LENGTH) return null;
+  const keys = run.match(new RegExp(`.{${COMPRESSED_KEY_HEX_LENGTH}}`, 'g')) ?? [];
+  return keys.every(k => COMPRESSED_KEY_RE.test(k)) ? keys : null;
+}
+
+function scriptKeys(run: string): string[] | null {
+  const keys: string[] = [];
+  for (const token of disassemble(hexToBytes(run))) {
+    if (token.kind === 'bad' || token.kind === 'unknown') return null;
+    if (token.kind !== 'push' || token.len < SECRET_BYTES) continue;
+    if (token.len !== COMPRESSED_KEY_BYTES || !COMPRESSED_KEY_RE.test(token.text)) return null;
+    keys.push(token.text);
+  }
+  return keys;
+}
+
+function longHexRunKind(run: string): SecretKind | null {
+  if (run.length % 2) return 'private';
+  const keys = keyList(run) ?? scriptKeys(run);
+  if (!keys) return 'private';
+  return keys.some(k => AMBIGUOUS_KEY_RE.test(k)) ? 'ambiguous' : null;
+}
 
 function hexRunKind(run: string): SecretKind | null {
-  if (run.length < RAW_KEY_LENGTH || run.length > MAX_PADDED_KEY_LENGTH) return null;
+  if (run.length < RAW_KEY_LENGTH) return null;
+  if (run.length > MAX_PADDED_KEY_LENGTH) return longHexRunKind(run);
   if (run.length === RAW_KEY_LENGTH) return 'private';
   if (AMBIGUOUS_KEY_RE.test(run)) return 'ambiguous';
   return PUBLIC_HEX_RE.test(run) ? null : 'private';
