@@ -10,6 +10,7 @@ import { p2wshScript, readScriptTarget, targetNetworkMismatch } from './address.
 import { decodeReply, isHeight, POX5_REPLIES } from './clarity.ts';
 import type { Pox5Read, Pox5Reply } from './clarity.ts';
 import { describeUnlockScript } from './script-view.ts';
+import { AMBIGUOUS_KEY_ERROR, AMBIGUOUS_KEY_RE, assertNoPrivateKey, assertScreened } from './secrets.ts';
 import type { Comparison, ErrorLike, Network, NetworkName, Settled, VerifyFacts, VerifyInput, VerifyResult } from './types.ts';
 import { deriveChecks } from './verdict.ts';
 
@@ -22,12 +23,15 @@ export interface UnlockForm {
   threshold?: string | number;
   sorted?: boolean;
   rawHex?: string;
+  trustedKeys?: string[];
+  confirmAmbiguous?: boolean;
 }
 
 export interface StakerUnlock {
   unlockBytes: Uint8Array;
   altUnlockBytes: Uint8Array | null;
   altLabel: string;
+  ambiguousKeysConfirmed: boolean;
 }
 
 interface WalletEntry {
@@ -70,10 +74,14 @@ export const NETWORKS: Record<NetworkName, Network> = {
 
 export const READ_TIMEOUT_MS = 15_000;
 
-export const PUBKEY_RE = /^(0x)?0[23][0-9a-fA-F]{64}$/;
+export const PUBKEY_RE = /^0[23][0-9a-f]{64}$/;
 export const HEX_RE = /^(0x)?[0-9a-fA-F]*$/;
 
-export const clean = (s: string | null | undefined) => (s || '').trim().replace(/^0x/i, '');
+export const clean = (s: string | null | undefined) => (s || '').trim().replace(/^(?:0x)+/i, '');
+
+export const normalizeKey = (s: string | null | undefined) => clean(s).toLowerCase();
+
+export const isAmbiguousKey = (key: string | null | undefined) => AMBIGUOUS_KEY_RE.test(normalizeKey(key));
 
 export const MAX_UNLOCK_BYTES = 683;
 
@@ -241,10 +249,17 @@ const settle = <T>(promise: Promise<T>): Promise<Settled<T>> =>
     (error): Settled<T> => ({ ok: false, error })
   );
 
+export const INPUT_LABELS: Partial<Record<keyof VerifyInput, string>> = {
+  stxAddress: 'staker principal',
+  expected: 'expected address',
+  heightOverride: 'unlock height override',
+};
+
 function validateInput(input: VerifyInput): void {
   if (!input || typeof input !== 'object' || typeof input.network !== 'string' || !Object.hasOwn(NETWORKS, input.network)) {
     throw new Error('Choose a network this page supports.');
   }
+  assertScreened(Object.entries(INPUT_LABELS).map(([key, label]) => ({ label, value: input[key as keyof VerifyInput] })));
   if (!isBondIndex(input.bondIndex)) throw new Error('The bond index must be a whole number, 0 or above.');
   if (!isStacksPrincipal(input.stxAddress)) throw new Error('The staker principal is not a valid Stacks address.');
   if (input.heightOverride !== undefined && (!Number.isSafeInteger(input.heightOverride) || input.heightOverride <= 0)) {
@@ -252,6 +267,9 @@ function validateInput(input: VerifyInput): void {
   }
   if (!(input.unlockBytes instanceof Uint8Array) || !input.unlockBytes.length || input.unlockBytes.length > MAX_UNLOCK_BYTES) {
     throw new Error('The staker-unlock-bytes are missing or too long.');
+  }
+  if (describeUnlockScript(input.unlockBytes).keys.some(isAmbiguousKey) && input.ambiguousKeysConfirmed !== true) {
+    throw new Error(AMBIGUOUS_KEY_ERROR);
   }
 }
 
@@ -376,16 +394,26 @@ async function readAndCompare(
   return { ...facts, checks: deriveChecks(facts) };
 }
 
+function approveAmbiguous(keys: string[], form: UnlockForm): boolean {
+  const trusted = new Set((form.trustedKeys ?? []).map(normalizeKey));
+  const ambiguous = keys.filter(k => AMBIGUOUS_KEY_RE.test(k));
+  if (ambiguous.some(k => !trusted.has(k)) && form.confirmAmbiguous !== true) throw new Error(AMBIGUOUS_KEY_ERROR);
+  return ambiguous.length > 0;
+}
+
 export function buildStakerUnlockBytes(form: UnlockForm): StakerUnlock {
   if (form.mode === 'single') {
-    const pk = clean(form.pubkey);
+    assertNoPrivateKey(form.pubkey);
+    const pk = normalizeKey(form.pubkey);
     if (!pk) throw new Error('Enter the 33-byte compressed Bitcoin public key, or connect Leather to fill it in.');
     if (!PUBKEY_RE.test(pk)) throw new Error('A compressed public key is 66 hex characters starting with 02 or 03.');
-    return { unlockBytes: buildUnlockScript(pk), altUnlockBytes: null, altLabel: '' };
+    const ambiguousKeysConfirmed = approveAmbiguous([pk], form);
+    return { unlockBytes: buildUnlockScript(pk), altUnlockBytes: null, altLabel: '', ambiguousKeysConfirmed };
   }
 
   if (form.mode === 'multi') {
-    const keys = (form.keys ?? []).map(clean).filter(Boolean);
+    assertNoPrivateKey(form.keys ?? []);
+    const keys = (form.keys ?? []).map(normalizeKey).filter(Boolean);
     if (!keys.length) throw new Error('Add the public keys of your Bitcoin vault.');
     for (const k of keys) {
       if (!PUBKEY_RE.test(k)) throw new Error(`"${k.slice(0, 12)}…" is not a 33-byte compressed public key.`);
@@ -397,19 +425,21 @@ export function buildStakerUnlockBytes(form: UnlockForm): StakerUnlock {
     if (!Number.isInteger(m) || m < 1 || m > keys.length) {
       throw new Error(`Threshold must be between 1 and ${keys.length}.`);
     }
+    const ambiguousKeysConfirmed = approveAmbiguous(keys, form);
 
     const sorted = sortKeysBip67(keys);
     return {
       unlockBytes: buildMultisigUnlockScript(form.sorted ? sorted : keys, m),
       altUnlockBytes: buildMultisigUnlockScript(form.sorted ? keys : sorted, m),
       altLabel: form.sorted ? 'the order you entered' : 'BIP-67 sorted',
+      ambiguousKeysConfirmed,
     };
   }
 
   const raw = clean((form.rawHex ?? '').replace(/\s+/g, ''));
   if (!raw) throw new Error('Paste the staker-unlock-bytes hex.');
   if (!HEX_RE.test(raw) || raw.length % 2) throw new Error('staker-unlock-bytes must be an even-length hex string.');
-  return { unlockBytes: hexToBytes(raw), altUnlockBytes: null, altLabel: '' };
+  return { unlockBytes: hexToBytes(raw), altUnlockBytes: null, altLabel: '', ambiguousKeysConfirmed: false };
 }
 
 const HRP_NETWORK: Record<string, NetworkName | undefined> = { bc: 'mainnet', bcrt: 'private-1' };
@@ -440,7 +470,7 @@ export function pickWalletAddresses(list: unknown): WalletAddresses {
 
   return {
     stxAddress: stx?.address ?? '',
-    btcPublicKey: btc?.publicKey ? clean(btc.publicKey) : '',
+    btcPublicKey: btc?.publicKey ? normalizeKey(btc.publicKey) : '',
     btcAddress: btc?.address ?? '',
     btcType: btc?.type ?? '',
     taprootOnly: Boolean(btc) && btc!.type === 'p2tr',

@@ -380,6 +380,8 @@
       cursor: pointer;
     }
 
+    .field label.checkline { justify-content: flex-start; }
+
     .checkline input { accent-color: var(--stacks-500); cursor: pointer; }
 
     .verdict {
@@ -794,6 +796,13 @@
         <div class="field">
           <label for="heightOverride">Unlock height override <span class="hint">optional</span></label>
           <input type="number" id="heightOverride" min="1" step="1" placeholder="derived from the bond" inputmode="numeric" />
+        </div>
+
+        <div class="field wide" id="confirmPubkeysBox" hidden>
+          <label class="checkline" for="confirmPubkeys">
+            <input type="checkbox" id="confirmPubkeys" />
+            These are public keys from my wallet's public-key export, not private keys
+          </label>
         </div>
       </div>
 

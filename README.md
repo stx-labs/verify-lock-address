@@ -13,7 +13,7 @@ Given a bond index, Stacks staker principal, and Bitcoin unlock script, the app:
 3. Cross-checks the output script against read-only calls to [`ST000000000000000000002AMW42H.pox-5`](https://explorer.hiro.so/txid/ST000000000000000000002AMW42H.pox-5?chain=testnet&api=https%3A%2F%2Fapi.private-1.hiro.so) (private-1) or [`SP000000000000000000002Q6VF78.pox-5`](https://explorer.hiro.so/txid/SP000000000000000000002Q6VF78.pox-5?chain=mainnet) (mainnet).
 4. Compares the result to the address or output-script hex your wallet's approval popup shows, pasted in. The comparison runs on the decoded output script (`web/src/address.ts`), so an all-upper-case bech32 address (as QR codes carry it) matches; a mixed-case one is invalid bech32 and fails with that reason, and an address for the other network is named as such.
 
-Leather can prefill the Stacks address and Bitcoin public key. Script construction runs in the browser. Only public Stacks API calls leave your machine.
+Leather can prefill the Stacks address and Bitcoin public key. Keys are normalised before they are checked: every leading `0x` is removed and hex is lower-cased. A pasted private key (xprv and its SLIP-132 variants, WIF, or raw hex), in any field and inside any surrounding text, is refused, and the error never repeats it. Script construction runs in the browser. Only public Stacks API calls leave your machine.
 
 Supported networks: **private-1** (regtest, `bcrt1…`) and **mainnet** (`bc1…`).
 
@@ -38,6 +38,11 @@ Any change to the form, the network or the wallet hides the previous result and 
 ### What never happens to your input
 
 - No text is parsed as HTML. The results, checks, notes, banners and errors are built with DOM nodes (`web/src/dom.ts`), and every string becomes a text node.
+- A private key never leaves its field. Every field is scanned before anything is rendered, put in an error, or sent, and `verify()` scans its input again before its first request.
+- The scan reads each value four ways: as typed; after Unicode NFKC normalisation (full-width letters become ASCII) with every format character removed (`\p{Cf}`: zero-width spaces and joiners, soft hyphens, byte-order marks); that with all whitespace removed; and that with every character that is not a letter or digit removed (hyphens, dots, colons, commas). In each reading every run of base58 characters is tested, at every offset, for a WIF (51/52 characters, by lead character) or a BIP-32 extended private key (111 characters); only a valid base58check checksum with a private version byte counts, so public keys, xpubs, Stacks principals and Bitcoin addresses are not mistaken for one. Every maximal run of hex characters is tested too: exactly 64 hex characters (a raw private key) is refused, and so is 66 ending in `01` (a Stacks private key) unless it starts with `02` / `03`.
+- A Stacks private key that starts with `02` or `03` (about 1 in 128 of them) has exactly the shape of a compressed public key that ends in `01` (about 1 in 256 of them), and no test on the text tells them apart. Outside the key field such a value is refused like any private key. In the key field it is accepted only when it is known to be public: Leather supplied it as a public key. Otherwise the page refuses with an explanation and shows a box, "These are public keys from my wallet's public-key export, not private keys"; only after it is ticked is the key used, sent or shown. The tick covers only the exact key value, network and wallet session it was given for: any edit (even one made without an input event), network change, or wallet connect or disconnect clears it, and `verify()` refuses such a key unless the caller says it was confirmed. This is the safest rule that still lets the real public keys through: refusing them all would lock out about 1 in 256 single-key stakers, and anything weaker would send a private key that happens to look like this.
+- The error names the field ("The expected address field holds what looks like a private key…"), focuses it, and never quotes what was typed.
+- Input length is capped before scanning: 1,024 characters per field, with a field-named error above that, so a huge paste cannot freeze the tab.
 - The page only ever shows back a pasted address it fully decoded into a known form: a Bitcoin address, or a standard scriptPubKey template (P2WSH, P2WPKH, P2TR, P2SH, P2PKH). Any other text is unreadable and never displayed.
 
 ## Development
@@ -66,6 +71,6 @@ The source is TypeScript. esbuild strips the types for the bundle and does not c
 
 ## Layout
 
-- `web/src/` — app wiring (`app.ts`), verification (`lock.ts`), the verdict and what may be revealed (`verdict.ts`), rendering (`render.ts`, `dom.ts`), Clarity reply shapes (`clarity.ts`), Bitcoin address decoding (`address.ts`), the script viewer (`script-view.ts`), shared types (`types.ts`) and ambient declarations (`globals.d.ts`)
+- `web/src/` — app wiring (`app.ts`), verification (`lock.ts`), the verdict and what may be revealed (`verdict.ts`), rendering (`render.ts`, `dom.ts`), Clarity reply shapes (`clarity.ts`), Bitcoin address decoding (`address.ts`), the private-key scanner (`secrets.ts`), the script viewer (`script-view.ts`), shared types (`types.ts`) and ambient declarations (`globals.d.ts`)
 - `web/index.html` — page shell and styles
-- `test/` — Node tests (lock math, verification, rendering, page smoke, source invariants); `test/helpers/` holds the API stub and the offline and live-test guards; `test/fixtures/` holds a recorded `/v2/pox` reply
+- `test/` — Node tests (lock math, verification, private-key screening, rendering, page smoke, source invariants); `test/helpers/` holds the API stub and the offline and live-test guards; `test/fixtures/` holds a recorded `/v2/pox` reply

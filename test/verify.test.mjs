@@ -2,15 +2,19 @@ import { guardFetch, live, takeAttempts } from './helpers/offline.mjs';
 import assert from 'node:assert/strict';
 import test, { afterEach } from 'node:test';
 
+import { buildUnlockScript } from '@stacks/bitcoin-staking';
 import { Cl } from '@stacks/transactions';
 
 import {
   buildStakerUnlockBytes,
   NETWORKS,
+  INPUT_LABELS,
   isStacksPrincipal,
   verify,
 } from '../web/src/lock.ts';
 import { computeVerdict } from '../web/src/verdict.ts';
+import { AMBIGUOUS_KEY_ERROR, privateKeyError } from '../web/src/secrets.ts';
+import { embeddings, PRIVATE_KEYS } from './helpers/secrets.mjs';
 import {
   ALLOWLISTED,
   BOND_2_EARLY,
@@ -69,6 +73,22 @@ test('bond 2: a staker with the vault keys and the matching address is a match',
   assert.equal(r.mode, 'multi');
   assert.ok(r.checks.every(c => c.status === 'pass'), JSON.stringify(r.checks));
   assert.equal(computeVerdict(r).state, 'match');
+});
+
+test('verify refuses a private key in any text it is handed, before any request and without echoing it', async () => {
+  for (const [kind, key] of Object.entries(PRIVATE_KEYS)) {
+    for (const [where, text] of Object.entries(embeddings(key))) {
+      for (const field of ['expected', 'stxAddress']) {
+        const calls = stubApi();
+        await assert.rejects(verify(passing({ [field]: text })), e => {
+          assert.equal(e.message, privateKeyError(INPUT_LABELS[field]), `${kind} ${where} in ${field}`);
+          assert.ok(!e.message.includes(key.slice(0, 6)) && !e.message.includes(key.slice(-6)));
+          return true;
+        });
+        assert.deepEqual(calls.requests, [], `${kind} ${where} in ${field}: nothing sent, /v2/pox included`);
+      }
+    }
+  }
 });
 
 test('verify refuses a staker principal that is not one, before any request', async () => {
@@ -485,4 +505,15 @@ test('a cancelled verification aborts its requests and rejects at once', async (
   already.abort();
   globalThis.fetch = makeStub().fetch;
   await assert.rejects(verify(passing(), () => {}, { signal: already.signal }), /cancelled/);
+});
+
+test('verify refuses a key shaped like a Stacks private key unless the caller says it was confirmed', async () => {
+  const AMBIGUOUS = '022f01e5e15cca351daff3843fb70f3c2f0a1bdd05e5af888a67784ef3e10a2a01';
+  const single = { mode: 'single', unlockBytes: buildUnlockScript(AMBIGUOUS), altUnlockBytes: null };
+  const stub = makeStub();
+  globalThis.fetch = stub.fetch;
+  await assert.rejects(verify(passing(single)), e => e.message === AMBIGUOUS_KEY_ERROR);
+  assert.deepEqual(stub.requests, [], 'nothing sent');
+  const r = await verify(passing({ ...single, ambiguousKeysConfirmed: true }));
+  assert.equal(r.tail.keys[0], AMBIGUOUS);
 });

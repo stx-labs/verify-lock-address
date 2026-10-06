@@ -169,6 +169,18 @@ test('buildStakerUnlockBytes covers all three input shapes', async () => {
   assert.equal(bytesToHex(raw.unlockBytes), UNLOCK_HEX, '0x prefix and case are tolerated');
 });
 
+test('keys are normalised before they are checked and compared: every 0x prefix, any case', async () => {
+  const { buildStakerUnlockBytes } = await import('../web/src/lock.ts');
+
+  for (const written of [`0x${KEY1}`, `0X0x${KEY1.toUpperCase()}`, `  0x0x0x${KEY1} `]) {
+    assert.equal(bytesToHex(buildStakerUnlockBytes({ mode: 'single', pubkey: written }).unlockBytes), `21${KEY1}ac`, written);
+  }
+  for (const twin of [`0x0x${KEY1}`, KEY1.toUpperCase(), `0X${KEY1}`]) {
+    assert.throws(() => buildStakerUnlockBytes({ mode: 'multi', keys: [KEY1, twin], threshold: '2' }), /appears twice/, twin);
+  }
+  assert.equal(buildStakerUnlockBytes({ mode: 'multi', keys: [KEY1, KEY2], threshold: 2 }).unlockBytes.at(-2), 0x52);
+});
+
 test('buildStakerUnlockBytes rejects the inputs that would cost money', async () => {
   const { buildStakerUnlockBytes } = await import('../web/src/lock.ts');
 
