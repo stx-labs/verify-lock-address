@@ -792,5 +792,7 @@ test('the public-key confirmation covers only the exact key it was given; every 
     }
     assert.match(doc.getElementById('formErr').textContent, /exactly what a Stacks private key looks like/, name);
     assert.equal(doc.getElementById('results').hidden, true, name);
+    assert.equal(doc.getElementById('confirmPubkeys').checked, false, `${name}: stale tick cleared`);
+    assert.equal(doc.getElementById('confirmPubkeysBox').hidden, false, `${name}: asked again`);
   }
 });

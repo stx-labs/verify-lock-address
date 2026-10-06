@@ -107,10 +107,15 @@ const NOT_KEY_MATERIAL = /[^0-9A-Za-z]/g;
 
 export const AMBIGUOUS_KEY_RE = /^0[23][0-9a-fA-F]{62}01$/;
 
+const PUBLIC_HEX_RE = /^(0[23][0-9a-f]{64}|(0020|5120)[0-9a-f]*)$/i;
+const RAW_KEY_LENGTH = 64;
+const MAX_PADDED_KEY_LENGTH = 69;
+
 function hexRunKind(run: string): SecretKind | null {
-  if (run.length === 64) return 'private';
-  if (run.length === 66 && /01$/.test(run)) return AMBIGUOUS_KEY_RE.test(run) ? 'ambiguous' : 'private';
-  return null;
+  if (run.length < RAW_KEY_LENGTH || run.length > MAX_PADDED_KEY_LENGTH) return null;
+  if (run.length === RAW_KEY_LENGTH) return 'private';
+  if (AMBIGUOUS_KEY_RE.test(run)) return 'ambiguous';
+  return PUBLIC_HEX_RE.test(run) ? null : 'private';
 }
 
 export function readings(text: string): string[] {

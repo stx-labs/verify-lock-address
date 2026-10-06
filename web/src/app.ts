@@ -172,7 +172,8 @@ function readForm(): { input: VerifyInput; warnings: string[] } {
     warnings.push(`The staker address is not a ${net.label} address (${net.prefixes.join(' / ')}…). Check the network selector.`);
   }
 
-  const provenance = { trustedKeys: [...trustedKeys], confirmAmbiguous: confirmedFor !== null && confirmedFor === keySignature() };
+  if (confirmedFor !== keySignature()) resetConfirmation();
+  const provenance = { trustedKeys: [...trustedKeys], confirmAmbiguous: confirmedFor !== null };
   let built: StakerUnlock;
   try {
     built = buildStakerUnlockBytes({ mode, pubkey: $('pubkey').value, ...provenance });

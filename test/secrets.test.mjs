@@ -77,6 +77,19 @@ test('bare 64-hex values and 66-hex values ending in 01 that cannot be public ke
   }
 });
 
+test('a raw hex key with stray hex characters glued to it is still refused', () => {
+  const key = PK_C.slice(2);
+  for (const text of [`a${key}`, `${key}f`, `ab${key}`, `a${key}01`, `ab${key}cd`, `abc${key}de`, `1${key}`.toUpperCase(), `note: 9${key}`]) {
+    assert.equal(classifySecret(text), 'private', text);
+    for (const keyField of [false, true]) {
+      assert.deepEqual(screenFields([{ label: 'f', value: text, keyField }]), { label: 'f', error: privateKeyError('f') }, text);
+    }
+  }
+  for (const text of [`0020${key}`, `5120${key}`.toUpperCase(), PK, PK_C, PK_NO_ZERO, `${PK},${PK_C}`]) {
+    assert.equal(classifySecret(text), null, text);
+  }
+});
+
 test('a 66-hex value starting 02/03 and ending 01 is ambiguous: allowed only in a key field, refused everywhere else', () => {
   assert.equal(classifySecret(AMBIGUOUS_PUBKEY), 'ambiguous');
   assert.equal(containsAmbiguousKey(AMBIGUOUS_PUBKEY), true);
