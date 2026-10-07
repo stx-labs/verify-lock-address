@@ -169,6 +169,40 @@ test('buildStakerUnlockBytes covers all three input shapes', async () => {
   assert.equal(bytesToHex(raw.unlockBytes), UNLOCK_HEX, '0x prefix and case are tolerated');
 });
 
+test('raw staker-unlock-bytes are screened for private keys and confirm ambiguous keys like the other modes', async () => {
+  const { buildStakerUnlockBytes } = await import('../web/src/lock.ts');
+  const { AMBIGUOUS_KEY_ERROR, PRIVATE_KEY_ERROR } = await import('../web/src/secrets.ts');
+  const { AMBIGUOUS_PUBKEY, PRIVATE_KEYS } = await import('./helpers/secrets.mjs');
+
+  for (const [kind, key] of Object.entries(PRIVATE_KEYS)) {
+    assert.throws(() => buildStakerUnlockBytes({ mode: 'raw', rawHex: key }), e => e.message === PRIVATE_KEY_ERROR, kind);
+  }
+
+  const rawHex = bytesToHex(buildUnlockScript(AMBIGUOUS_PUBKEY));
+  assert.throws(() => buildStakerUnlockBytes({ mode: 'raw', rawHex }), e => e.message === AMBIGUOUS_KEY_ERROR);
+  for (const provenance of [{ confirmAmbiguous: true }, { trustedKeys: [`0x${AMBIGUOUS_PUBKEY.toUpperCase()}`] }]) {
+    const built = buildStakerUnlockBytes({ mode: 'raw', rawHex, ...provenance });
+    assert.equal(bytesToHex(built.unlockBytes), rawHex);
+    assert.equal(built.ambiguousKeysConfirmed, true);
+  }
+  assert.equal(buildStakerUnlockBytes({ mode: 'raw', rawHex: UNLOCK_HEX }).ambiguousKeysConfirmed, false);
+
+  assert.throws(() => buildStakerUnlockBytes({ mode: 'raw', rawHex: AMBIGUOUS_PUBKEY }), e => e.message === AMBIGUOUS_KEY_ERROR, 'bare 33-byte value');
+  assert.equal(buildStakerUnlockBytes({ mode: 'raw', rawHex: AMBIGUOUS_PUBKEY, confirmAmbiguous: true }).ambiguousKeysConfirmed, true);
+});
+
+test('keys are normalised before they are checked and compared: every 0x prefix, any case', async () => {
+  const { buildStakerUnlockBytes } = await import('../web/src/lock.ts');
+
+  for (const written of [`0x${KEY1}`, `0X0x${KEY1.toUpperCase()}`, `  0x0x0x${KEY1} `]) {
+    assert.equal(bytesToHex(buildStakerUnlockBytes({ mode: 'single', pubkey: written }).unlockBytes), `21${KEY1}ac`, written);
+  }
+  for (const twin of [`0x0x${KEY1}`, KEY1.toUpperCase(), `0X${KEY1}`]) {
+    assert.throws(() => buildStakerUnlockBytes({ mode: 'multi', keys: [KEY1, twin], threshold: '2' }), /appears twice/, twin);
+  }
+  assert.equal(buildStakerUnlockBytes({ mode: 'multi', keys: [KEY1, KEY2], threshold: 2 }).unlockBytes.at(-2), 0x52);
+});
+
 test('buildStakerUnlockBytes rejects the inputs that would cost money', async () => {
   const { buildStakerUnlockBytes } = await import('../web/src/lock.ts');
 

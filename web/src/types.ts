@@ -37,6 +37,7 @@ export interface VerifyInput {
   bondIndex: number;
   stxAddress: string;
   unlockBytes: Uint8Array;
+  ambiguousKeysConfirmed?: boolean;
   expected?: string | null;
   heightOverride?: number;
 }

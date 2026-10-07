@@ -1,23 +1,43 @@
 import { fill, h, paragraphs } from './dom.ts';
 import type { Child } from './dom.ts';
-import { buildStakerUnlockBytes, errorSignature, isStacksPrincipal, NETWORKS, pickWalletAddresses, verify } from './lock.ts';
-import type { WalletAddresses } from './lock.ts';
+import { buildStakerUnlockBytes, errorSignature, isStacksPrincipal, NETWORKS, normalizeKey, pickWalletAddresses, verify } from './lock.ts';
+import type { StakerUnlock, WalletAddresses } from './lock.ts';
 import { renderResult } from './render.ts';
+import { AMBIGUOUS_KEY_ERROR, screenFields } from './secrets.ts';
 import type { NetworkName, VerifyInput } from './types.ts';
 
 type FieldId = 'bondIndex' | 'stxAddress' | 'pubkey' | 'expected' | 'heightOverride';
 
+interface FieldEntry {
+  label: string;
+  value: string;
+  el: HTMLElement;
+  max?: number;
+  keyField: boolean;
+}
+
 const $ = ((id: string) => document.getElementById(id)) as {
   (id: 'network'): HTMLSelectElement;
-  (id: FieldId): HTMLInputElement;
+  (id: FieldId | 'confirmPubkeys'): HTMLInputElement;
   (id: 'verifyBtn' | 'connectBtn'): HTMLButtonElement;
   (id: string): HTMLElement;
 };
 
-const FIELD_LABELS = {
+const FIELD_LABELS: Record<FieldId, string> = {
   bondIndex: 'bond index',
+  stxAddress: 'staker principal',
+  pubkey: 'Bitcoin public key',
+  expected: 'expected address',
   heightOverride: 'unlock height override',
 };
+
+const MODE_FIELDS: Record<'single', FieldId[]> = {
+  single: ['bondIndex', 'stxAddress', 'pubkey', 'expected', 'heightOverride'],
+};
+
+const KEY_FIELDS = new Set<FieldId>(['pubkey']);
+
+let walletKey: string | null = null;
 
 let generation = 0;
 let running: AbortController | null = null;
@@ -37,6 +57,17 @@ function invalidate(): void {
     setBusy(false);
   }
   $('results').hidden = true;
+}
+
+let confirmedFor: string | null = null;
+let walletSession = 0;
+
+const keySignature = () => JSON.stringify(['single', $('network').value, walletSession, normalizeKey($('pubkey').value)]);
+
+function resetConfirmation(): void {
+  confirmedFor = null;
+  $('confirmPubkeys').checked = false;
+  $('confirmPubkeysBox').hidden = true;
 }
 
 async function connectLeather(): Promise<WalletAddresses> {
@@ -83,16 +114,40 @@ function walletNotes(picked: WalletAddresses): Child[] {
   return notes;
 }
 
+function screen(entries: FieldEntry[]): void {
+  const found = screenFields(entries.map(({ label, value, max, keyField }) => ({ label, value, max, keyField })));
+  if (!found) return;
+  entries.find(e => e.label === found.label)?.el?.focus();
+  throw new Error(found.error);
+}
+
+function fieldEntry(id: FieldId): FieldEntry {
+  return {
+    label: FIELD_LABELS[id],
+    value: $(id).value,
+    el: $(id),
+    keyField: KEY_FIELDS.has(id),
+  };
+}
+
+function screenForm(mode: 'single'): void {
+  screen(MODE_FIELDS[mode].map(fieldEntry));
+}
+
+const DIGITS_RE = /^\d+$/;
+
 function readWholeNumber<E>(id: 'bondIndex' | 'heightOverride', { min, empty }: { min: number; empty: () => E }): number | E {
-  const el = $(id);
-  if (el.validity?.badInput) throw new Error(`The ${FIELD_LABELS[id]} must be a whole number, ${min} or above.`);
-  if (!el.value.trim()) return empty();
-  const n = typeof el.valueAsNumber === 'number' && !Number.isNaN(el.valueAsNumber) ? el.valueAsNumber : Number(el.value.trim());
+  const text = $(id).value.trim();
+  if (!text) return empty();
+  const n = DIGITS_RE.test(text) ? Number(text) : NaN;
   if (!Number.isSafeInteger(n) || n < min) throw new Error(`The ${FIELD_LABELS[id]} must be a whole number, ${min} or above.`);
   return n;
 }
 
 function readForm(): { input: VerifyInput; warnings: string[] } {
+  const mode = 'single';
+  screenForm(mode);
+
   const network = $('network').value as NetworkName;
   if (!Object.hasOwn(NETWORKS, network)) throw new Error('Choose a network this page supports.');
   const stxAddress = $('stxAddress').value.trim();
@@ -114,18 +169,28 @@ function readForm(): { input: VerifyInput; warnings: string[] } {
     warnings.push(`The staker address is not a ${net.label} address (${net.prefixes.join(' / ')}…). Check the network selector.`);
   }
 
-  const { unlockBytes } = buildStakerUnlockBytes({
-    mode: 'single',
-    pubkey: $('pubkey').value,
-  });
+  if (confirmedFor !== keySignature()) resetConfirmation();
+  const provenance = { trustedKeys: walletKey ? [walletKey] : [], confirmAmbiguous: confirmedFor !== null };
+  let built: StakerUnlock;
+  try {
+    built = buildStakerUnlockBytes({ mode, pubkey: $('pubkey').value, ...provenance });
+  } catch (e) {
+    if ((e as Error).message === AMBIGUOUS_KEY_ERROR) {
+      $('confirmPubkeysBox').hidden = false;
+      $('pubkey').focus();
+    }
+    throw e;
+  }
+  const { unlockBytes, ambiguousKeysConfirmed } = built;
 
   return {
     input: {
       network,
-      mode: 'single',
+      mode,
       bondIndex,
       stxAddress,
       unlockBytes,
+      ambiguousKeysConfirmed,
       expected: expected || null,
       heightOverride,
     },
@@ -165,6 +230,10 @@ function main(): void {
   setNetworkBadge();
 
   $('network').addEventListener('change', setNetworkBadge);
+  $('network').addEventListener('change', resetConfirmation);
+  $('confirmPubkeys').addEventListener('change', () => {
+    confirmedFor = $('confirmPubkeys').checked ? keySignature() : null;
+  });
 
   for (const type of ['input', 'change']) {
     document.addEventListener(type, ev => {
@@ -175,6 +244,10 @@ function main(): void {
   for (const id of ['stxAddress', 'pubkey'] as const) {
     $(id).addEventListener('input', () => $(id).classList.remove('prefilled'));
   }
+  $('pubkey').addEventListener('input', () => {
+    walletKey = null;
+    resetConfirmation();
+  });
 
   $('connectBtn').addEventListener('click', async () => {
     const btn = $('connectBtn');
@@ -183,6 +256,9 @@ function main(): void {
     try {
       const w = await connectLeather();
 
+      walletSession += 1;
+      walletKey = null;
+      resetConfirmation();
       invalidate();
 
       if (w.stxAddress) {
@@ -190,6 +266,7 @@ function main(): void {
         $('stxAddress').classList.add('prefilled');
       }
       if (w.btcPublicKey) {
+        walletKey = normalizeKey(w.btcPublicKey);
         $('pubkey').value = w.btcPublicKey;
         $('pubkey').classList.add('prefilled');
       }
@@ -218,6 +295,9 @@ function main(): void {
   });
 
   $('disconnectBtn').addEventListener('click', () => {
+    walletSession += 1;
+    walletKey = null;
+    resetConfirmation();
     invalidate();
     $('walletBadge').hidden = true;
     $('connectBtn').hidden = false;

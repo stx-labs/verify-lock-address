@@ -11,6 +11,7 @@ import { JSDOM } from 'jsdom';
 
 import { NETWORKS } from '../web/src/lock.ts';
 import { deadlineError, isTransient, reachable, skipOnTransient } from './helpers/live.mjs';
+import { AMBIGUOUS_PUBKEY, embeddings, PRIVATE_KEYS } from './helpers/secrets.mjs';
 import { ALLOWLISTED, BOND_2_EARLY, BOND_2_HEIGHT, NOT_LISTED, contractLockupOutputScript, stubApi } from './helpers/stub-api.mjs';
 
 const root = new URL('../', import.meta.url);
@@ -395,6 +396,19 @@ test('a wallet reply with a BTC key but no address connects without crashing', a
   assert.equal(doc.getElementById('pubkey').value, KEY1);
 });
 
+test('a private key pasted into a key field is refused without being echoed', () => {
+  const wif = 'KwdMAjGmerYanjeui5SHS7JkmpZvVipYvB2LJGU1ZxJwYvP98617';
+  const { doc } = loadPage();
+  setValue(doc, 'bondIndex', '106');
+  setValue(doc, 'stxAddress', STX);
+  setValue(doc, 'pubkey', wif);
+  click(doc, 'verifyBtn');
+  const err = doc.getElementById('formErr');
+  assert.equal(err.hidden, false);
+  assert.match(err.textContent, /looks like a private key/);
+  assert.ok(!err.textContent.includes(wif.slice(0, 6)) && !err.textContent.includes(wif.slice(-6)));
+});
+
 function fillForm(doc, window) {
   doc.getElementById('network').value = 'mainnet';
   doc.getElementById('network').dispatchEvent(new window.Event('change', { bubbles: true }));
@@ -418,6 +432,34 @@ test('a pasted expected address cannot inject markup into the checks', async () 
   assert.equal(doc.getElementById('verdictMark').textContent, '✕');
 });
 
+test('a private key in the expected or staker field is refused without being echoed', async () => {
+  const wif = 'KwdMAjGmerYanjeui5SHS7JkmpZvVipYvB2LJGU1ZxJwYvP98617';
+  for (const field of ['expected', 'stxAddress']) {
+    const { doc, window } = loadPage();
+    withLeather(window, [
+      { symbol: 'STX', address: ALLOWLISTED },
+      { symbol: 'BTC', type: 'p2wpkh', address: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', publicKey: KEY1 },
+    ]);
+    const { fetch, calls } = stubApi();
+    window.fetch = fetch;
+    click(doc, 'connectBtn');
+    await settle();
+
+    setValue(doc, 'bondIndex', '2');
+    setValue(doc, 'stxAddress', ALLOWLISTED);
+    setValue(doc, field, wif);
+    click(doc, 'verifyBtn');
+    await settle();
+
+    const err = doc.getElementById('formErr');
+    assert.equal(err.hidden, false, field);
+    assert.match(err.textContent, /looks like a private key/, field);
+    assert.ok(!err.textContent.includes(wif.slice(0, 6)) && !err.textContent.includes(wif.slice(-6)), field);
+    assert.equal(doc.getElementById('results').hidden, true, `${field}: nothing rendered`);
+    assert.deepEqual(calls, [], `${field}: nothing sent`);
+  }
+});
+
 test('a staker principal that is not one is refused without echoing it', () => {
   const { doc } = loadPage();
   setValue(doc, 'bondIndex', '106');
@@ -427,6 +469,83 @@ test('a staker principal that is not one is refused without echoing it', () => {
   const err = doc.getElementById('formErr');
   assert.match(err.textContent, /does not look like a Stacks address/);
   assert.ok(!err.textContent.includes('not-a-principal-xyz'));
+});
+
+const SCREENED = {
+  bondIndex: 'bond index',
+  stxAddress: 'staker principal',
+  pubkey: 'Bitcoin public key',
+  expected: 'expected address',
+  heightOverride: 'unlock height override',
+};
+
+async function sweepKeys(field, expectRefusal) {
+  const { doc, window } = loadPage();
+  const stub = stubApi();
+  window.fetch = stub.fetch;
+  fillForm(doc, window);
+  const baseline = doc.body.textContent;
+
+  for (const [kind, key] of Object.entries(PRIVATE_KEYS)) {
+    const fragments = Array.from({ length: key.length - 5 }, (_, i) => key.slice(i, i + 6)).filter(f => !baseline.includes(f));
+    for (const [where, text] of Object.entries(embeddings(key))) {
+      fillForm(doc, window);
+      setValue(doc, field, text);
+      stub.requests.length = 0;
+      const label = `${kind} ${where} in ${field}`;
+      const held = doc.getElementById(field).value;
+
+      click(doc, 'verifyBtn');
+      await settle();
+
+      const sent = stub.requests.map(r => `${r.url} ${r.body}`).join('\n');
+      assert.equal(fragments.find(f => sent.includes(f)), undefined, `${label}: part of the key was sent`);
+      const page = doc.body.textContent;
+      assert.equal(fragments.find(f => page.includes(f)), undefined, `${label}: part of the key is on the page`);
+      expectRefusal({ doc, stub, label, held, key });
+    }
+  }
+}
+
+test('a private key in any field, in any wrapping, is refused by name and never reaches the page or the network', async () => {
+  const control = loadPage();
+  const controlStub = stubApi();
+  control.window.fetch = controlStub.fetch;
+  fillForm(control.doc, control.window);
+  await runVerify(control.doc);
+  assert.ok(controlStub.calls.length > 0, 'the filled form does verify when no key is present');
+  assert.equal(control.doc.getElementById('verdictMark').textContent, '✓');
+
+  const refused = name => ({ doc, stub, label, held }) => {
+    assert.notEqual(held, '', `${label}: the field kept the text, so it was screened`);
+    assert.deepEqual(stub.requests, [], `${label}: nothing sent`);
+    const err = doc.getElementById('formErr');
+    assert.equal(err.hidden, false, label);
+    assert.equal(err.textContent, `The ${name} field holds what looks like a private key. Never paste one anywhere — nothing was sent, but clear it from that field. Use the public key (02… / 03…) or the xpub / tpub form instead.`, label);
+    assert.equal(doc.getElementById('results').hidden, true, `${label}: nothing rendered`);
+  };
+
+  for (const [field, name] of Object.entries(SCREENED)) await sweepKeys(field, refused(name));
+});
+
+test('the refused field gets focus', () => {
+  const { doc, window } = loadPage();
+  window.fetch = stubApi().fetch;
+  fillForm(doc, window);
+  setValue(doc, 'expected', `"${PRIVATE_KEYS.tprv}"`);
+  click(doc, 'verifyBtn');
+  assert.equal(doc.activeElement, doc.getElementById('expected'));
+});
+
+test('a very long paste is refused by field name before any scan', () => {
+  const { doc, window } = loadPage();
+  window.fetch = stubApi().fetch;
+  fillForm(doc, window);
+  setValue(doc, 'expected', 'K'.repeat(1_000_000));
+  const started = Date.now();
+  click(doc, 'verifyBtn');
+  assert.ok(Date.now() - started < 1000, `took ${Date.now() - started} ms`);
+  assert.match(doc.getElementById('formErr').textContent, /^The expected address field is longer than 1024 characters/);
 });
 
 test('any change to the inputs, network or wallet clears a shown result', async () => {
@@ -476,8 +595,8 @@ test('a result that arrives after the inputs changed is discarded', async () => 
   assert.equal(doc.getElementById('verifyBtn').disabled, false);
 });
 
-test('whole numbers typed in any form a number input accepts are read as such', async () => {
-  for (const [bond, override] of [['2.0', ''], ['2', '994700.0'], ['2e0', '9947e2']]) {
+test('whole numbers are read only as plain digits, and nothing else', async () => {
+  for (const [bond, override] of [['2', ''], ['02', '994700'], [' 2 ', ' 0994700 ']]) {
     const { doc, window } = loadPage();
     const calls = stubApi();
     window.fetch = calls.fetch;
@@ -490,9 +609,17 @@ test('whole numbers typed in any form a number input accepts are read as such', 
   }
   const { doc, window } = loadPage();
   fillForm(doc, window);
-  setValue(doc, 'bondIndex', '2.5');
-  click(doc, 'verifyBtn');
-  assert.match(doc.getElementById('formErr').textContent, /The bond index must be a whole number, 0 or above/);
+  for (const bond of ['2.0', '1.00000000000000001', '2e0', '+2', '0x2', '0b10', '-1', 'Infinity', '2 3', '9007199254740993']) {
+    setValue(doc, 'bondIndex', bond);
+    click(doc, 'verifyBtn');
+    assert.match(doc.getElementById('formErr').textContent, /The bond index must be a whole number, 0 or above/, bond);
+  }
+  setValue(doc, 'bondIndex', '2');
+  for (const override of ['0', '994700.0', '9947e2']) {
+    setValue(doc, 'heightOverride', override);
+    click(doc, 'verifyBtn');
+    assert.match(doc.getElementById('formErr').textContent, /The unlock height override must be a whole number, 1 or above/, override);
+  }
 });
 
 test("Leather's own rejection reason is shown, and a cancel says so", async () => {
@@ -567,5 +694,127 @@ test('changing the inputs cancels a running verification: its requests abort and
     setValue(doc, 'expected', LOCK_ADDRESS);
     await runVerify(doc);
     assert.equal(doc.getElementById('verdictMark').textContent, '✓', 'the next run is not affected');
+  }
+});
+
+test('a typed key shaped like a Stacks private key is held back until the staker confirms it is public', async () => {
+  const { doc, window } = loadPage();
+  const stub = stubApi();
+  window.fetch = stub.fetch;
+  fillForm(doc, window);
+  setValue(doc, 'expected', '');
+  setValue(doc, 'pubkey', AMBIGUOUS_PUBKEY);
+
+  click(doc, 'verifyBtn');
+  await settle();
+  const err = doc.getElementById('formErr');
+  assert.equal(err.hidden, false);
+  assert.match(err.textContent, /exactly what a Stacks private key looks like/);
+  assert.ok(!doc.body.textContent.replace(doc.getElementById('pubkey').textContent, '').includes(AMBIGUOUS_PUBKEY.slice(10, 40)), 'not shown');
+  assert.deepEqual(stub.requests, [], 'nothing sent');
+  assert.equal(doc.getElementById('confirmPubkeysBox').hidden, false);
+  assert.equal(doc.activeElement, doc.getElementById('pubkey'), 'the key field is focused');
+
+  doc.getElementById('confirmPubkeys').checked = true;
+  doc.getElementById('confirmPubkeys').dispatchEvent(new window.Event('change', { bubbles: true }));
+  await runVerify(doc);
+  assert.ok(stub.requests.length > 0, 'sent once confirmed');
+
+  setValue(doc, 'pubkey', `${AMBIGUOUS_PUBKEY} `);
+  assert.equal(doc.getElementById('confirmPubkeys').checked, false, 'editing a key unticks the confirmation');
+  assert.equal(doc.getElementById('confirmPubkeysBox').hidden, true);
+  stub.requests.length = 0;
+  click(doc, 'verifyBtn');
+  await settle();
+  assert.deepEqual(stub.requests, [], 'asked again after an edit');
+});
+
+test('a key Leather supplies as a public key needs no confirmation, even when it ends in 01', async () => {
+  const { doc, window } = loadPage();
+  withLeather(window, [{ symbol: 'STX', address: ALLOWLISTED }, { symbol: 'BTC', type: 'p2wpkh', address: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', publicKey: AMBIGUOUS_PUBKEY }]);
+  const stub = stubApi();
+  window.fetch = stub.fetch;
+  click(doc, 'connectBtn');
+  await settle();
+  assert.equal(doc.getElementById('pubkey').value, AMBIGUOUS_PUBKEY);
+  setValue(doc, 'bondIndex', '2');
+  await runVerify(doc);
+  assert.equal(doc.getElementById('confirmPubkeysBox').hidden, true);
+  assert.equal(doc.getElementById('tPolicy').textContent, 'single key');
+
+  setValue(doc, 'pubkey', ` ${AMBIGUOUS_PUBKEY}`);
+  stub.requests.length = 0;
+  click(doc, 'verifyBtn');
+  await settle();
+  assert.deepEqual(stub.requests, [], 'after an edit the key is no longer the one Leather filled in');
+  assert.match(doc.getElementById('formErr').textContent, /exactly what a Stacks private key looks like/);
+
+  click(doc, 'disconnectBtn');
+  setValue(doc, 'stxAddress', ALLOWLISTED);
+  setValue(doc, 'pubkey', AMBIGUOUS_PUBKEY);
+  stub.requests.length = 0;
+  click(doc, 'verifyBtn');
+  await settle();
+  assert.deepEqual(stub.requests, [], 'after disconnect the same key is no longer trusted');
+  assert.match(doc.getElementById('formErr').textContent, /exactly what a Stacks private key looks like/);
+});
+
+const AMBIGUOUS_2 = '037777777777777777777777777777777777777777777777777777777777777301';
+
+test('the public-key confirmation covers only the exact key it was given; every change to it asks again', async () => {
+  const tick = doc => {
+    const box = doc.getElementById('confirmPubkeys');
+    box.checked = true;
+    box.dispatchEvent(new doc.defaultView.Event('change', { bubbles: true }));
+  };
+  const transitions = {
+    'none (control)': { act: () => {} },
+    'edit to another such key': { act: doc => setValue(doc, 'pubkey', AMBIGUOUS_2) },
+    'value replaced without an input event (autofill, an extension)': {
+      act: doc => {
+        doc.getElementById('pubkey').value = AMBIGUOUS_2;
+      },
+    },
+    'network change and back': {
+      act: doc => {
+        for (const net of ['private-1', 'mainnet']) {
+          doc.getElementById('network').value = net;
+          doc.getElementById('network').dispatchEvent(new doc.defaultView.Event('change', { bubbles: true }));
+        }
+      },
+    },
+    'wallet connect': { act: async (doc, window) => (withLeather(window, [{ symbol: 'STX', address: ALLOWLISTED }]), click(doc, 'connectBtn'), await settle()) },
+  };
+
+  for (const [name, { act }] of Object.entries(transitions)) {
+    const { doc, window } = loadPage();
+    const stub = stubApi();
+    window.fetch = stub.fetch;
+    fillForm(doc, window);
+    setValue(doc, 'expected', '');
+    setValue(doc, 'stxAddress', ALLOWLISTED);
+    setValue(doc, 'pubkey', AMBIGUOUS_PUBKEY);
+    tick(doc);
+    await act(doc, window);
+    stub.requests.length = 0;
+    click(doc, 'verifyBtn');
+    await settle();
+    await settle();
+
+    const sent = stub.requests.map(r => `${r.url} ${r.body}`).join('\n');
+    const shown = doc.body.textContent;
+    if (name === 'none (control)') {
+      assert.ok(stub.requests.length > 0, 'a confirmed key is sent');
+      continue;
+    }
+    assert.deepEqual(stub.requests, [], `${name}: nothing sent`);
+    for (const key of [AMBIGUOUS_PUBKEY, AMBIGUOUS_2]) {
+      assert.ok(!sent.includes(key.slice(4, 40)), `${name}: key sent`);
+      assert.ok(!shown.includes(key.slice(4, 40)), `${name}: key rendered`);
+    }
+    assert.match(doc.getElementById('formErr').textContent, /exactly what a Stacks private key looks like/, name);
+    assert.equal(doc.getElementById('results').hidden, true, name);
+    assert.equal(doc.getElementById('confirmPubkeys').checked, false, `${name}: stale tick cleared`);
+    assert.equal(doc.getElementById('confirmPubkeysBox').hidden, false, `${name}: asked again`);
   }
 });

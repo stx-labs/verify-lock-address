@@ -2,15 +2,19 @@ import { guardFetch, live, takeAttempts } from './helpers/offline.mjs';
 import assert from 'node:assert/strict';
 import test, { afterEach } from 'node:test';
 
+import { buildUnlockScript } from '@stacks/bitcoin-staking';
 import { Cl } from '@stacks/transactions';
 
 import {
   buildStakerUnlockBytes,
   NETWORKS,
+  INPUT_LABELS,
   isStacksPrincipal,
   verify,
 } from '../web/src/lock.ts';
 import { computeVerdict } from '../web/src/verdict.ts';
+import { AMBIGUOUS_KEY_ERROR, PRIVATE_KEY_ERROR, privateKeyError } from '../web/src/secrets.ts';
+import { embeddings, PRIVATE_KEYS } from './helpers/secrets.mjs';
 import {
   ALLOWLISTED,
   BOND_2_EARLY,
@@ -69,6 +73,38 @@ test('bond 2: a staker with the vault keys and the matching address is a match',
   assert.equal(r.mode, 'multi');
   assert.ok(r.checks.every(c => c.status === 'pass'), JSON.stringify(r.checks));
   assert.equal(computeVerdict(r).state, 'match');
+});
+
+test('verify refuses a private key in any text it is handed, before any request and without echoing it', async () => {
+  for (const [kind, key] of Object.entries(PRIVATE_KEYS)) {
+    for (const [where, text] of Object.entries(embeddings(key))) {
+      for (const field of ['expected', 'stxAddress']) {
+        const calls = stubApi();
+        await assert.rejects(verify(passing({ [field]: text })), e => {
+          assert.equal(e.message, privateKeyError(INPUT_LABELS[field]), `${kind} ${where} in ${field}`);
+          assert.ok(!e.message.includes(key.slice(0, 6)) && !e.message.includes(key.slice(-6)));
+          return true;
+        });
+        assert.deepEqual(calls.requests, [], `${kind} ${where} in ${field}: nothing sent, /v2/pox included`);
+      }
+    }
+  }
+});
+
+test('verify refuses unlock bytes that carry a private key, as raw bytes or as text, before any request', async () => {
+  const { hexToBytes } = await import('@stacks/common');
+  const secret = PRIVATE_KEYS['bare 64-hex secret'];
+  const cases = {
+    'raw secret bytes': hexToBytes(secret),
+    'secret pushed in a script': hexToBytes(`20${secret}ac`),
+    'secret after a key': hexToBytes(`21${'02'.padEnd(66, 'ab')}20${secret}ac`),
+    'WIF as text bytes': new TextEncoder().encode(PRIVATE_KEYS['WIF mainnet compressed']),
+  };
+  for (const [what, unlockBytes] of Object.entries(cases)) {
+    const calls = stubApi();
+    await assert.rejects(verify(passing({ unlockBytes })), e => e.message === PRIVATE_KEY_ERROR, what);
+    assert.deepEqual(calls.requests, [], `${what}: nothing sent`);
+  }
 });
 
 test('verify refuses a staker principal that is not one, before any request', async () => {
@@ -262,7 +298,7 @@ test('expected input is shown back only once decoded into a standard script temp
   for (const [expected, reason] of [
     ['e9873d79c6d87dc0fb6a5778633389f4453213303da61f20bd67fc233aa332', 'unreadable'],
     ['00', 'unreadable'],
-    [`0020${'ab'.repeat(31)}`, 'unreadable'],
+    [`0020${'ab'.repeat(10)}`, 'unreadable'],
     ['37Rf1c6VoRDVNBXVuiiqLZdLehvksYa4Yf', 'unreadable'],
     ['xpub6BuKrNqTrGfsy8VAAdUW2KCxbHywuSKjg7hZuAXERXDv7GfuxUgUWdVRKNsgujcwdjEHCjaXWouPKi1m5gMgdWX8JpRcyMkrSxPe4Da3Lx8', 'unreadable'],
     [`0014${'11'.repeat(20)}`, 'mismatch'],
@@ -485,4 +521,22 @@ test('a cancelled verification aborts its requests and rejects at once', async (
   already.abort();
   globalThis.fetch = makeStub().fetch;
   await assert.rejects(verify(passing(), () => {}, { signal: already.signal }), /cancelled/);
+});
+
+test('verify refuses a key shaped like a Stacks private key unless the caller says it was confirmed', async () => {
+  const AMBIGUOUS = '022f01e5e15cca351daff3843fb70f3c2f0a1bdd05e5af888a67784ef3e10a2a01';
+  const single = { mode: 'single', unlockBytes: buildUnlockScript(AMBIGUOUS), altUnlockBytes: null };
+  const stub = makeStub();
+  globalThis.fetch = stub.fetch;
+  await assert.rejects(verify(passing(single)), e => e.message === AMBIGUOUS_KEY_ERROR);
+  assert.deepEqual(stub.requests, [], 'nothing sent');
+  const r = await verify(passing({ ...single, ambiguousKeysConfirmed: true }));
+  assert.equal(r.tail.keys[0], AMBIGUOUS);
+
+  const { hexToBytes } = await import('@stacks/common');
+  const bare = { mode: 'raw', unlockBytes: hexToBytes(AMBIGUOUS), altUnlockBytes: null };
+  stub.requests.length = 0;
+  await assert.rejects(verify(passing(bare)), e => e.message === AMBIGUOUS_KEY_ERROR);
+  assert.deepEqual(stub.requests, [], 'a bare 33-byte value is held back too');
+  await assert.rejects(verify(passing({ ...bare, ambiguousKeysConfirmed: true })), e => e.message !== AMBIGUOUS_KEY_ERROR);
 });
