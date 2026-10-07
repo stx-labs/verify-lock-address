@@ -532,4 +532,11 @@ test('verify refuses a key shaped like a Stacks private key unless the caller sa
   assert.deepEqual(stub.requests, [], 'nothing sent');
   const r = await verify(passing({ ...single, ambiguousKeysConfirmed: true }));
   assert.equal(r.tail.keys[0], AMBIGUOUS);
+
+  const { hexToBytes } = await import('@stacks/common');
+  const bare = { mode: 'raw', unlockBytes: hexToBytes(AMBIGUOUS), altUnlockBytes: null };
+  stub.requests.length = 0;
+  await assert.rejects(verify(passing(bare)), e => e.message === AMBIGUOUS_KEY_ERROR);
+  assert.deepEqual(stub.requests, [], 'a bare 33-byte value is held back too');
+  await assert.rejects(verify(passing({ ...bare, ambiguousKeysConfirmed: true })), e => e.message !== AMBIGUOUS_KEY_ERROR);
 });

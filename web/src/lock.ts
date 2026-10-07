@@ -83,6 +83,8 @@ export const normalizeKey = (s: string | null | undefined) => clean(s).toLowerCa
 
 export const isAmbiguousKey = (key: string | null | undefined) => AMBIGUOUS_KEY_RE.test(normalizeKey(key));
 
+const keyCandidates = (unlockBytes: Uint8Array) => [bytesToHex(unlockBytes), ...describeUnlockScript(unlockBytes).keys].map(normalizeKey);
+
 export const MAX_UNLOCK_BYTES = 683;
 
 const isBondIndex = (value: unknown) => Number.isSafeInteger(value) && (value as number) >= 0;
@@ -269,7 +271,7 @@ function validateInput(input: VerifyInput): void {
     throw new Error('The staker-unlock-bytes are missing or too long.');
   }
   assertNoPrivateKey(bytesToHex(input.unlockBytes), new TextDecoder('latin1').decode(input.unlockBytes));
-  if (describeUnlockScript(input.unlockBytes).keys.some(isAmbiguousKey) && input.ambiguousKeysConfirmed !== true) {
+  if (keyCandidates(input.unlockBytes).some(isAmbiguousKey) && input.ambiguousKeysConfirmed !== true) {
     throw new Error(AMBIGUOUS_KEY_ERROR);
   }
 }
@@ -442,7 +444,7 @@ export function buildStakerUnlockBytes(form: UnlockForm): StakerUnlock {
   if (!raw) throw new Error('Paste the staker-unlock-bytes hex.');
   if (!HEX_RE.test(raw) || raw.length % 2) throw new Error('staker-unlock-bytes must be an even-length hex string.');
   const unlockBytes = hexToBytes(raw);
-  const ambiguousKeysConfirmed = approveAmbiguous(describeUnlockScript(unlockBytes).keys.map(normalizeKey), form);
+  const ambiguousKeysConfirmed = approveAmbiguous(keyCandidates(unlockBytes), form);
   return { unlockBytes, altUnlockBytes: null, altLabel: '', ambiguousKeysConfirmed };
 }
 

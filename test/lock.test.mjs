@@ -186,6 +186,9 @@ test('raw staker-unlock-bytes are screened for private keys and confirm ambiguou
     assert.equal(built.ambiguousKeysConfirmed, true);
   }
   assert.equal(buildStakerUnlockBytes({ mode: 'raw', rawHex: UNLOCK_HEX }).ambiguousKeysConfirmed, false);
+
+  assert.throws(() => buildStakerUnlockBytes({ mode: 'raw', rawHex: AMBIGUOUS_PUBKEY }), e => e.message === AMBIGUOUS_KEY_ERROR, 'bare 33-byte value');
+  assert.equal(buildStakerUnlockBytes({ mode: 'raw', rawHex: AMBIGUOUS_PUBKEY, confirmAmbiguous: true }).ambiguousKeysConfirmed, true);
 });
 
 test('keys are normalised before they are checked and compared: every 0x prefix, any case', async () => {
