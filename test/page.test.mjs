@@ -595,8 +595,8 @@ test('a result that arrives after the inputs changed is discarded', async () => 
   assert.equal(doc.getElementById('verifyBtn').disabled, false);
 });
 
-test('whole numbers in plain decimal or exponent form are read as such, and nothing else', async () => {
-  for (const [bond, override] of [['2.0', ''], ['2', '994700.0'], ['2e0', '9947e2']]) {
+test('whole numbers are read only as plain digits, and nothing else', async () => {
+  for (const [bond, override] of [['2', ''], ['02', '994700'], [' 2 ', ' 0994700 ']]) {
     const { doc, window } = loadPage();
     const calls = stubApi();
     window.fetch = calls.fetch;
@@ -609,10 +609,16 @@ test('whole numbers in plain decimal or exponent form are read as such, and noth
   }
   const { doc, window } = loadPage();
   fillForm(doc, window);
-  for (const bond of ['2.5', '0x2', '0b10', '-1', 'Infinity', '2 3', '1e400']) {
+  for (const bond of ['2.0', '1.00000000000000001', '2e0', '+2', '0x2', '0b10', '-1', 'Infinity', '2 3', '9007199254740993']) {
     setValue(doc, 'bondIndex', bond);
     click(doc, 'verifyBtn');
     assert.match(doc.getElementById('formErr').textContent, /The bond index must be a whole number, 0 or above/, bond);
+  }
+  setValue(doc, 'bondIndex', '2');
+  for (const override of ['0', '994700.0', '9947e2']) {
+    setValue(doc, 'heightOverride', override);
+    click(doc, 'verifyBtn');
+    assert.match(doc.getElementById('formErr').textContent, /The unlock height override must be a whole number, 1 or above/, override);
   }
 });
 
