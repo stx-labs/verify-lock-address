@@ -134,11 +134,12 @@ function screenForm(mode: 'single'): void {
   screen(MODE_FIELDS[mode].map(fieldEntry));
 }
 
+const DECIMAL_RE = /^(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/i;
+
 function readWholeNumber<E>(id: 'bondIndex' | 'heightOverride', { min, empty }: { min: number; empty: () => E }): number | E {
-  const el = $(id);
-  if (el.validity?.badInput) throw new Error(`The ${FIELD_LABELS[id]} must be a whole number, ${min} or above.`);
-  if (!el.value.trim()) return empty();
-  const n = typeof el.valueAsNumber === 'number' && !Number.isNaN(el.valueAsNumber) ? el.valueAsNumber : Number(el.value.trim());
+  const text = $(id).value.trim();
+  if (!text) return empty();
+  const n = DECIMAL_RE.test(text) ? Number(text) : NaN;
   if (!Number.isSafeInteger(n) || n < min) throw new Error(`The ${FIELD_LABELS[id]} must be a whole number, ${min} or above.`);
   return n;
 }

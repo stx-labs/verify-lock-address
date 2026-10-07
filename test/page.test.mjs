@@ -517,10 +517,7 @@ test('a private key in any field, in any wrapping, is refused by name and never 
   assert.equal(control.doc.getElementById('verdictMark').textContent, '✓');
 
   const refused = name => ({ doc, stub, label, held }) => {
-    if (held === '') {
-      assert.equal(doc.getElementById(label.split(' in ')[1])?.type, 'number', `${label}: only a number input may refuse the text itself`);
-      return;
-    }
+    assert.notEqual(held, '', `${label}: the field kept the text, so it was screened`);
     assert.deepEqual(stub.requests, [], `${label}: nothing sent`);
     const err = doc.getElementById('formErr');
     assert.equal(err.hidden, false, label);
@@ -598,7 +595,7 @@ test('a result that arrives after the inputs changed is discarded', async () => 
   assert.equal(doc.getElementById('verifyBtn').disabled, false);
 });
 
-test('whole numbers typed in any form a number input accepts are read as such', async () => {
+test('whole numbers in plain decimal or exponent form are read as such, and nothing else', async () => {
   for (const [bond, override] of [['2.0', ''], ['2', '994700.0'], ['2e0', '9947e2']]) {
     const { doc, window } = loadPage();
     const calls = stubApi();
@@ -612,9 +609,11 @@ test('whole numbers typed in any form a number input accepts are read as such', 
   }
   const { doc, window } = loadPage();
   fillForm(doc, window);
-  setValue(doc, 'bondIndex', '2.5');
-  click(doc, 'verifyBtn');
-  assert.match(doc.getElementById('formErr').textContent, /The bond index must be a whole number, 0 or above/);
+  for (const bond of ['2.5', '0x2', '0b10', '-1', 'Infinity', '2 3', '1e400']) {
+    setValue(doc, 'bondIndex', bond);
+    click(doc, 'verifyBtn');
+    assert.match(doc.getElementById('formErr').textContent, /The bond index must be a whole number, 0 or above/, bond);
+  }
 });
 
 test("Leather's own rejection reason is shown, and a cancel says so", async () => {
