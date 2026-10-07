@@ -737,6 +737,13 @@ test('a key Leather supplies as a public key needs no confirmation, even when it
   assert.equal(doc.getElementById('confirmPubkeysBox').hidden, true);
   assert.equal(doc.getElementById('tPolicy').textContent, 'single key');
 
+  setValue(doc, 'pubkey', ` ${AMBIGUOUS_PUBKEY}`);
+  stub.requests.length = 0;
+  click(doc, 'verifyBtn');
+  await settle();
+  assert.deepEqual(stub.requests, [], 'after an edit the key is no longer the one Leather filled in');
+  assert.match(doc.getElementById('formErr').textContent, /exactly what a Stacks private key looks like/);
+
   click(doc, 'disconnectBtn');
   setValue(doc, 'stxAddress', ALLOWLISTED);
   setValue(doc, 'pubkey', AMBIGUOUS_PUBKEY);

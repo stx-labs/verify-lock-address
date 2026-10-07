@@ -90,7 +90,7 @@ test('a raw hex key with stray hex characters glued to it is still refused', () 
   }
 });
 
-test('a long hex run passes only as a list of compressed keys or a script with no secret-sized push', () => {
+test('a long hex run passes only as a list of compressed keys or a chain of single-key and multisig unlock scripts', () => {
   const key = PK_C.slice(2);
   const refused = {
     'hex word before a key': `deadbeef${key}`,
@@ -99,12 +99,15 @@ test('a long hex run passes only as a list of compressed keys or a script with n
     '64-byte push': `4c40${key}${key}`,
     'odd length': `a${PK}${PK_C}`,
     'key list with a non-key chunk': `${PK}04${key}`,
+    'only small-number opcodes': '51'.repeat(35),
+    'opcodes before a script': `${'51'.repeat(10)}21${PK}ac`,
+    'long run of one hex digit': '5'.repeat(200),
   };
   for (const [what, text] of Object.entries(refused)) {
     assert.equal(classifySecret(text), 'private', what);
     assert.throws(() => assertNoPrivateKey(text), e => e.message === PRIVATE_KEY_ERROR, what);
   }
-  for (const text of [`21${PK}ac`, `${PK}${PK_C}${PK_NO_ZERO}`, `5121${PK}21${PK_C}52ae`, '5'.repeat(200)]) {
+  for (const text of [`21${PK}ac`, `21${PK}ad21${PK_C}ac`, `${PK}${PK_C}${PK_NO_ZERO}`, `5121${PK}21${PK_C}52ae`, `010221${PK}21${PK_C}0102ae`]) {
     assert.equal(classifySecret(text), null, text);
   }
   for (const text of [`21${AMBIGUOUS_PUBKEY}ac`, `${PK}${AMBIGUOUS_PUBKEY}`]) {
@@ -182,9 +185,9 @@ test('screenFields names the field and bounds the work by length', () => {
 });
 
 test('scanning the largest accepted value of worst-case characters stays quick', () => {
-  for (const ch of ['K', '5', 'x']) {
+  for (const [ch, hex] of [['K', false], ['5', true], ['x', false]]) {
     const started = Date.now();
-    assert.equal(containsPrivateKey(ch.repeat(MAX_DESCRIPTOR_LENGTH)), false);
+    assert.equal(containsPrivateKey(ch.repeat(MAX_DESCRIPTOR_LENGTH)), hex, ch);
     assert.ok(Date.now() - started < 3000, `${ch}: ${Date.now() - started} ms`);
   }
 });

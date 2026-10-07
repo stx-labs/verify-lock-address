@@ -111,33 +111,20 @@ const NOT_KEY_MATERIAL = /[^0-9A-Za-z]/g;
 export const AMBIGUOUS_KEY_RE = /^0[23][0-9a-fA-F]{62}01$/;
 
 const PUBLIC_HEX_RE = /^(0[23]|0020|5120)[0-9a-f]{64}$/i;
-const COMPRESSED_KEY_RE = /^0[23]/;
 const RAW_KEY_LENGTH = 64;
 const MAX_PADDED_KEY_LENGTH = 69;
-const COMPRESSED_KEY_HEX_LENGTH = 66;
 const COMPRESSED_KEY_BYTES = 33;
-const SECRET_BYTES = 32;
+const KEY_LIST_RE = /^(?:0[23][0-9a-f]{64})+$/i;
+const UNLOCK_SCRIPTS_RE = /^(?:210[23][0-9a-f]{64}a[cd]|(?:5[1-9a-f]|60|01[0-9a-f]{2})(?:210[23][0-9a-f]{64})+(?:5[1-9a-f]|60|01[0-9a-f]{2})a[ef])+$/i;
 
-function keyList(run: string): string[] | null {
-  if (run.length % COMPRESSED_KEY_HEX_LENGTH) return null;
-  const keys = run.match(new RegExp(`.{${COMPRESSED_KEY_HEX_LENGTH}}`, 'g')) ?? [];
-  return keys.every(k => COMPRESSED_KEY_RE.test(k)) ? keys : null;
-}
-
-function scriptKeys(run: string): string[] | null {
-  const keys: string[] = [];
-  for (const token of disassemble(hexToBytes(run))) {
-    if (token.kind === 'bad' || token.kind === 'unknown') return null;
-    if (token.kind !== 'push' || token.len < SECRET_BYTES) continue;
-    if (token.len !== COMPRESSED_KEY_BYTES || !COMPRESSED_KEY_RE.test(token.text)) return null;
-    keys.push(token.text);
-  }
-  return keys;
+function publicKeysIn(run: string): string[] | null {
+  if (KEY_LIST_RE.test(run)) return run.match(/.{66}/g) ?? [];
+  if (!UNLOCK_SCRIPTS_RE.test(run)) return null;
+  return disassemble(hexToBytes(run)).flatMap(t => (t.kind === 'push' && t.len === COMPRESSED_KEY_BYTES ? [t.text] : []));
 }
 
 function longHexRunKind(run: string): SecretKind | null {
-  if (run.length % 2) return 'private';
-  const keys = keyList(run) ?? scriptKeys(run);
+  const keys = publicKeysIn(run);
   if (!keys) return 'private';
   return keys.some(k => AMBIGUOUS_KEY_RE.test(k)) ? 'ambiguous' : null;
 }

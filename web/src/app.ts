@@ -37,11 +37,7 @@ const MODE_FIELDS: Record<'single', FieldId[]> = {
 
 const KEY_FIELDS = new Set<FieldId>(['pubkey']);
 
-const trustedKeys = new Set<string>();
-
-const trustKeys = (keys: string[]) => {
-  for (const key of keys) trustedKeys.add(normalizeKey(key));
-};
+let walletKey: string | null = null;
 
 let generation = 0;
 let running: AbortController | null = null;
@@ -173,7 +169,7 @@ function readForm(): { input: VerifyInput; warnings: string[] } {
   }
 
   if (confirmedFor !== keySignature()) resetConfirmation();
-  const provenance = { trustedKeys: [...trustedKeys], confirmAmbiguous: confirmedFor !== null };
+  const provenance = { trustedKeys: walletKey ? [walletKey] : [], confirmAmbiguous: confirmedFor !== null };
   let built: StakerUnlock;
   try {
     built = buildStakerUnlockBytes({ mode, pubkey: $('pubkey').value, ...provenance });
@@ -247,7 +243,10 @@ function main(): void {
   for (const id of ['stxAddress', 'pubkey'] as const) {
     $(id).addEventListener('input', () => $(id).classList.remove('prefilled'));
   }
-  $('pubkey').addEventListener('input', resetConfirmation);
+  $('pubkey').addEventListener('input', () => {
+    walletKey = null;
+    resetConfirmation();
+  });
 
   $('connectBtn').addEventListener('click', async () => {
     const btn = $('connectBtn');
@@ -257,7 +256,7 @@ function main(): void {
       const w = await connectLeather();
 
       walletSession += 1;
-      trustedKeys.clear();
+      walletKey = null;
       resetConfirmation();
       invalidate();
 
@@ -266,7 +265,7 @@ function main(): void {
         $('stxAddress').classList.add('prefilled');
       }
       if (w.btcPublicKey) {
-        trustKeys([w.btcPublicKey]);
+        walletKey = normalizeKey(w.btcPublicKey);
         $('pubkey').value = w.btcPublicKey;
         $('pubkey').classList.add('prefilled');
       }
@@ -296,7 +295,7 @@ function main(): void {
 
   $('disconnectBtn').addEventListener('click', () => {
     walletSession += 1;
-    trustedKeys.clear();
+    walletKey = null;
     resetConfirmation();
     invalidate();
     $('walletBadge').hidden = true;
