@@ -12,7 +12,17 @@ import { JSDOM } from 'jsdom';
 import { NETWORKS } from '../web/src/lock.ts';
 import { deadlineError, isTransient, reachable, skipOnTransient } from './helpers/live.mjs';
 import { AMBIGUOUS_PUBKEY, embeddings, PRIVATE_KEYS } from './helpers/secrets.mjs';
-import { ALLOWLISTED, BOND_2_EARLY, BOND_2_HEIGHT, NOT_LISTED, contractLockupOutputScript, stubApi } from './helpers/stub-api.mjs';
+import {
+  ALLOWLISTED,
+  BOND_2_EARLY,
+  BOND_2_HEIGHT,
+  DESCRIPTOR,
+  LOCK_ADDRESS as MULTI_LOCK_ADDRESS,
+  NOT_LISTED,
+  VAULT,
+  contractLockupOutputScript,
+  stubApi,
+} from './helpers/stub-api.mjs';
 
 const root = new URL('../', import.meta.url);
 const path = rel => fileURLToPath(new URL(rel, root));
@@ -70,9 +80,11 @@ test('the page boots without errors, offering the single-key flow', () => {
   assert.deepEqual(errors, []);
   assert.equal(doc.getElementById('results').hidden, true);
   assert.equal(doc.getElementById('netBadgeText').textContent, 'private-1');
-  assert.ok(doc.getElementById('pubkey'), 'the public-key field is the only unlock input');
+  assert.equal(doc.getElementById('paneSingle').hidden, false, 'single key is the default');
+  assert.equal(doc.getElementById('paneMulti').hidden, true);
+  assert.equal(doc.querySelectorAll('#keyList input').length, 2, 'multisig starts with two empty key rows');
 
-  for (const gone of ['modeSeg', 'paneMulti', 'paneRaw', 'keyList', 'threshold', 'sortKeys', 'rawHex']) {
+  for (const gone of ['paneRaw', 'rawHex']) {
     assert.equal(doc.getElementById(gone), null, `#${gone} should no longer be in the page`);
   }
 });
@@ -171,12 +183,15 @@ test('a full verification renders end to end', async t => {
 });
 
 function withLeather(window, addresses) {
+  const seen = [];
   window.LeatherProvider = {
-    request: async method => {
+    request: async (method, params) => {
       assert.equal(method, 'getAddresses');
+      seen.push(params);
       return { jsonrpc: '2.0', id: 'test', result: { addresses } };
     },
   };
+  return seen;
 }
 
 const settle = () => new Promise(r => setTimeout(r, 20));
@@ -325,6 +340,16 @@ const lockAddress = (staker, pubkey) => {
 
 const LOCK_ADDRESS = lockAddress(ALLOWLISTED, KEY1);
 
+const VAULT_KEYS = [
+  '030347be500a8b2707a00e7576c0c527a247cddc6e8363ee51147b8e43b590baa9',
+  '0347b913aed4ee088b6fea3e9537836a1c8f1b72111cf010af5589d93f3a433f02',
+];
+const STRANGER = '02e815a71c4214535e1a9b1cffb5798142fd3197e5ccc7cf7b124716ade78ec974';
+
+const POLICY_REPLY = [{ symbol: 'BTC', type: 'p2wsh', address: VAULT, descriptor: DESCRIPTOR }];
+
+const keyInputs = doc => Array.from(doc.querySelectorAll('#keyList input'));
+
 async function runVerify(doc) {
   click(doc, 'verifyBtn');
   for (let i = 0; i < 100 && doc.getElementById('results').hidden && doc.getElementById('formErr').hidden; i += 1) {
@@ -374,6 +399,280 @@ test('a Leather account fills the single key and verifies', async () => {
   assert.match(checksText(doc), /The address you supplied matches/);
 });
 
+test('a Leather policy account fills the multisig from its descriptor and verifies', async () => {
+  const { doc, window, errors } = loadPage();
+  const seen = withLeather(window, POLICY_REPLY);
+  window.fetch = stubApi().fetch;
+
+  click(doc, 'connectBtn');
+  await settle();
+
+  assert.deepEqual(errors, []);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].allowPolicyAccounts, true, 'asks Leather to include policy accounts');
+  assert.equal(doc.getElementById('formErr').hidden, true);
+  assert.equal(doc.getElementById('paneMulti').hidden, false, 'switches to multisig on its own');
+  assert.equal(doc.getElementById('paneSingle').hidden, true);
+  assert.deepEqual(keyInputs(doc).map(i => i.value), VAULT_KEYS);
+  assert.ok(keyInputs(doc).every(i => i.classList.contains('prefilled')));
+  assert.equal(doc.getElementById('threshold').value, '2');
+  assert.equal(doc.getElementById('sortKeys').checked, true);
+  assert.equal(doc.getElementById('vaultAddress').value, VAULT);
+  assert.match(doc.getElementById('vaultInfo').textContent, /2-of-2 sortedmulti/);
+  assert.equal(doc.getElementById('network').value, 'mainnet', 'the vault address decides the chain');
+  assert.match(doc.getElementById('walletNote').textContent, /no Stacks address/);
+  assert.doesNotMatch(doc.getElementById('walletNote').textContent, /no Bitcoin public key/);
+
+  setValue(doc, 'bondIndex', '2');
+  setValue(doc, 'stxAddress', ALLOWLISTED);
+  await runVerify(doc);
+
+  assert.notEqual(doc.getElementById('addrText').textContent, MULTI_LOCK_ADDRESS, 'withheld until the wallet destination is pasted');
+  assert.ok(!doc.body.textContent.includes(MULTI_LOCK_ADDRESS));
+  assert.equal(doc.getElementById('verdictTitle').textContent, 'Not compared — paste the destination from your wallet');
+  assert.equal(doc.getElementById('tPolicy').textContent, '2-of-2');
+  assert.equal(doc.getElementById('tHeightSrc').textContent, 'computeBondUnlockHeight');
+  assert.equal(doc.getElementById('verdictMark').textContent, '!', 'consistent, pending the manual checks');
+  assert.match(checksText(doc), /These keys and this threshold reproduce your vault address/);
+
+  setValue(doc, 'expected', MULTI_LOCK_ADDRESS);
+  await runVerify(doc);
+  assert.equal(doc.getElementById('addrText').textContent, MULTI_LOCK_ADDRESS);
+  assert.equal(doc.getElementById('verdictMark').textContent, '✓');
+});
+
+test('keys entered by hand verify the same as the wallet-filled ones', async () => {
+  const { doc, window } = loadPage();
+  window.fetch = stubApi().fetch;
+  doc.getElementById('network').value = 'mainnet';
+
+  doc.querySelector('#modeSeg [data-mode="multi"]').dispatchEvent(new window.Event('click', { bubbles: true }));
+  assert.equal(doc.getElementById('paneMulti').hidden, false);
+
+  const [a, b] = keyInputs(doc);
+  a.value = VAULT_KEYS[1];
+  b.value = VAULT_KEYS[0];
+  a.dispatchEvent(new window.Event('input', { bubbles: true }));
+  setValue(doc, 'threshold', '2');
+  setValue(doc, 'bondIndex', '2');
+  setValue(doc, 'stxAddress', ALLOWLISTED);
+  await runVerify(doc);
+
+  setValue(doc, 'expected', MULTI_LOCK_ADDRESS);
+  await runVerify(doc);
+  assert.equal(doc.getElementById('addrText').textContent, MULTI_LOCK_ADDRESS);
+  assert.match(checksText(doc), /Vault address not supplied — this page cannot tie the keys to your wallet/);
+  assert.equal(doc.getElementById('verdictMark').textContent, '!', 'a multisig without its vault is not verified');
+  assert.equal(doc.getElementById('verdictTitle').textContent, 'Not verified — copy your vault address from your wallet');
+  assert.ok(!doc.body.textContent.includes(VAULT), 'the derived vault is not printed for pasting back');
+
+  click(doc, 'addKeyBtn');
+  assert.equal(keyInputs(doc).length, 3);
+  for (const btn of doc.querySelectorAll('#keyList button')) btn.dispatchEvent(new window.Event('click', { bubbles: true }));
+  assert.equal(keyInputs(doc).length, 1);
+  assert.equal(doc.querySelector('#keyList button').disabled, true);
+});
+
+test('a pasted descriptor fills the keys, and a bad one says why', async () => {
+  const { doc, window } = loadPage();
+  window.fetch = stubApi({ network: 'private-1' }).fetch;
+  doc.querySelector('#modeSeg [data-mode="multi"]').dispatchEvent(new window.Event('click', { bubbles: true }));
+
+  setValue(doc, 'descriptor', DESCRIPTOR.replace('sortedmulti(2', 'sortedmulti(3'));
+  click(doc, 'useDescriptorBtn');
+  assert.equal(doc.getElementById('descriptorNote').hidden, false);
+  assert.match(doc.getElementById('descriptorNote').textContent, /threshold 3 is more than the 2/);
+
+  setValue(doc, 'descriptor', DESCRIPTOR);
+  click(doc, 'useDescriptorBtn');
+  assert.deepEqual(keyInputs(doc).map(i => i.value), VAULT_KEYS);
+  assert.equal(doc.getElementById('threshold').value, '2');
+  assert.match(doc.getElementById('descriptorNote').textContent, /Filled 2 keys, threshold 2, sorted/);
+
+  setValue(doc, 'bondIndex', '2');
+  setValue(doc, 'stxAddress', ALLOWLISTED);
+  await runVerify(doc);
+  assert.match(doc.getElementById('verdictSub').textContent, /mainnet \(xpub\) keys, but the network selected is private-1/);
+});
+
+test('changing a wallet-supplied key fails the vault check', async () => {
+  const { doc, window } = loadPage();
+  withLeather(window, POLICY_REPLY);
+  window.fetch = stubApi().fetch;
+  click(doc, 'connectBtn');
+  await settle();
+
+  const [first] = keyInputs(doc);
+  first.value = STRANGER;
+  first.dispatchEvent(new window.Event('input', { bubbles: true }));
+  assert.ok(!first.classList.contains('prefilled'));
+  assert.match(doc.getElementById('vaultInfo').textContent, /You changed what Leather supplied/);
+
+  setValue(doc, 'bondIndex', '2');
+  setValue(doc, 'stxAddress', ALLOWLISTED);
+  await runVerify(doc);
+
+  assert.equal(doc.getElementById('verdictMark').textContent, '✕');
+  assert.equal(doc.getElementById('verdictTitle').textContent, 'The keys do not reproduce your vault');
+  assert.match(checksText(doc), /The keys do not reproduce your vault address — do not fund this address/);
+});
+
+test('flipping the key order is diagnosed as such', async () => {
+  const { doc, window } = loadPage();
+  withLeather(window, POLICY_REPLY);
+  window.fetch = stubApi().fetch;
+  click(doc, 'connectBtn');
+  await settle();
+
+  const [a, b] = keyInputs(doc);
+  [a.value, b.value] = [b.value, a.value];
+  a.dispatchEvent(new window.Event('input', { bubbles: true }));
+  doc.getElementById('sortKeys').checked = false;
+  doc.getElementById('sortKeys').dispatchEvent(new window.Event('change', { bubbles: true }));
+
+  setValue(doc, 'bondIndex', '2');
+  setValue(doc, 'stxAddress', ALLOWLISTED);
+  await runVerify(doc);
+  assert.match(checksText(doc), /The other key order would match your vault/);
+});
+
+test('an unreadable wallet descriptor keeps the vault and asks for the keys', async () => {
+  const { doc, window } = loadPage();
+  withLeather(window, [{ ...POLICY_REPLY[0], descriptor: 'wsh(pk(nonsense))' }]);
+  click(doc, 'connectBtn');
+  await settle();
+
+  assert.equal(doc.getElementById('formErr').hidden, true, 'still connected');
+  assert.equal(doc.getElementById('paneMulti').hidden, false);
+  assert.equal(doc.getElementById('vaultAddress').value, VAULT);
+  assert.deepEqual(keyInputs(doc).map(i => i.value), ['', '']);
+  assert.match(doc.getElementById('walletNote').textContent, /descriptor could not be read/);
+});
+
+test('disconnecting drops the wallet vault and returns to single key', async () => {
+  const { doc, window } = loadPage();
+  withLeather(window, POLICY_REPLY);
+  click(doc, 'connectBtn');
+  await settle();
+
+  click(doc, 'disconnectBtn');
+  assert.equal(doc.getElementById('paneSingle').hidden, false);
+  assert.equal(doc.getElementById('paneMulti').hidden, true);
+  assert.equal(doc.getElementById('vaultAddress').value, '');
+  assert.equal(doc.getElementById('vaultInfo').hidden, true);
+  assert.deepEqual(keyInputs(doc).map(i => i.value), ['', '']);
+});
+
+test('disconnecting drops what the wallet supplied and keeps what the staker typed', async () => {
+  const { doc, window } = loadPage();
+  withLeather(window, POLICY_REPLY);
+  click(doc, 'connectBtn');
+  await settle();
+
+  const sort = doc.getElementById('sortKeys');
+  for (const checked of [false, true]) {
+    sort.checked = checked;
+    sort.dispatchEvent(new window.Event('change', { bubbles: true }));
+  }
+  const [first] = keyInputs(doc);
+  first.value = STRANGER;
+  first.dispatchEvent(new window.Event('input', { bubbles: true }));
+
+  click(doc, 'disconnectBtn');
+  assert.equal(doc.getElementById('paneMulti').hidden, false, 'a typed key keeps the multisig open');
+  assert.deepEqual(keyInputs(doc).map(i => i.value), [STRANGER], 'the typed key stays, the wallet key goes');
+  assert.equal(doc.getElementById('vaultAddress').value, '', 'the wallet-supplied vault goes');
+  assert.equal(doc.getElementById('threshold').value, '2');
+  assert.equal(doc.getElementById('vaultInfo').hidden, true);
+
+  const typed = loadPage();
+  withLeather(typed.window, POLICY_REPLY);
+  click(typed.doc, 'connectBtn');
+  await settle();
+  setValue(typed.doc, 'vaultAddress', VAULT);
+  setValue(typed.doc, 'stxAddress', ALLOWLISTED);
+  click(typed.doc, 'disconnectBtn');
+  assert.equal(typed.doc.getElementById('vaultAddress').value, VAULT, 'a vault address typed over the wallet one stays');
+  assert.equal(typed.doc.getElementById('stxAddress').value, ALLOWLISTED, 'a typed principal stays');
+});
+
+test('a descriptor fill survives connecting and disconnecting a single-key wallet, and a wallet vault resets its note', async () => {
+  const { doc, window } = loadPage();
+  doc.querySelector('#modeSeg [data-mode="multi"]').dispatchEvent(new window.Event('click', { bubbles: true }));
+  setValue(doc, 'descriptor', DESCRIPTOR);
+  click(doc, 'useDescriptorBtn');
+  assert.deepEqual(keyInputs(doc).map(i => i.value), VAULT_KEYS);
+
+  withLeather(window, [{ symbol: 'STX', address: STX }, ...BTC_ONLY]);
+  click(doc, 'connectBtn');
+  await settle();
+  click(doc, 'disconnectBtn');
+  assert.deepEqual(keyInputs(doc).map(i => i.value), VAULT_KEYS, 'descriptor-filled keys are not the wallet’s to take back');
+  assert.equal(doc.getElementById('pubkey').value, '', 'the wallet-filled key goes');
+
+  withLeather(window, POLICY_REPLY);
+  click(doc, 'connectBtn');
+  await settle();
+  assert.equal(doc.getElementById('descriptorNote').hidden, true, 'a wallet vault replaces the descriptor fill and its note');
+});
+
+test('disconnecting drops the vault of an account whose descriptor could not be read', async () => {
+  const { doc, window } = loadPage();
+  withLeather(window, [{ ...POLICY_REPLY[0], descriptor: 'wsh(pk(nonsense))' }]);
+  click(doc, 'connectBtn');
+  await settle();
+  assert.equal(doc.getElementById('vaultAddress').value, VAULT);
+
+  click(doc, 'disconnectBtn');
+  assert.equal(doc.getElementById('vaultAddress').value, '');
+  assert.equal(doc.getElementById('paneSingle').hidden, false);
+});
+
+test('a single-sig connect after a policy account verifies the new key, not the old vault', async () => {
+  const { doc, window } = loadPage();
+  withLeather(window, POLICY_REPLY);
+  click(doc, 'connectBtn');
+  await settle();
+  const sort = doc.getElementById('sortKeys');
+  for (const checked of [false, true]) {
+    sort.checked = checked;
+    sort.dispatchEvent(new window.Event('change', { bubbles: true }));
+  }
+  click(doc, 'disconnectBtn');
+
+  withLeather(window, [{ symbol: 'STX', address: STX }, ...BTC_ONLY]);
+  window.fetch = stubApi({ network: 'private-1', bonds: [106] }).fetch;
+  click(doc, 'connectBtn');
+  await settle();
+
+  assert.equal(doc.getElementById('paneSingle').hidden, false, 'single-sig mode');
+  assert.equal(doc.getElementById('paneMulti').hidden, true);
+  assert.equal(doc.getElementById('pubkey').value, KEY2);
+  assert.equal(doc.getElementById('vaultAddress').value, '');
+
+  setValue(doc, 'bondIndex', '106');
+  await runVerify(doc);
+  assert.equal(doc.getElementById('tPolicy').textContent, 'single key');
+  assert.doesNotMatch(checksText(doc), /vault address/);
+});
+
+test('a single-sig connect switches out of a multisig the staker typed, and keeps their keys', async () => {
+  const { doc, window } = loadPage();
+  doc.querySelector('#modeSeg [data-mode="multi"]').dispatchEvent(new window.Event('click', { bubbles: true }));
+  const [a, b] = keyInputs(doc);
+  a.value = VAULT_KEYS[0];
+  b.value = VAULT_KEYS[1];
+  a.dispatchEvent(new window.Event('input', { bubbles: true }));
+
+  withLeather(window, [{ symbol: 'STX', address: STX }, ...BTC_ONLY]);
+  click(doc, 'connectBtn');
+  await settle();
+  assert.equal(doc.getElementById('paneSingle').hidden, false);
+
+  click(doc, 'disconnectBtn');
+  assert.deepEqual(keyInputs(doc).map(i => i.value), VAULT_KEYS);
+});
+
 test('a wallet reply with a BTC key but no address connects without crashing', async () => {
   const { doc, window, errors } = loadPage();
   withLeather(window, [{ symbol: 'BTC', type: 'p2wpkh', publicKey: KEY2 }]);
@@ -396,9 +695,30 @@ test('a wallet reply with a BTC key but no address connects without crashing', a
   assert.equal(doc.getElementById('pubkey').value, KEY1);
 });
 
+test("the descriptor's network warning lasts only while one of its keys is still there", async () => {
+  const { doc, window } = loadPage();
+  window.fetch = stubApi({ network: 'private-1' }).fetch;
+  doc.querySelector('#modeSeg [data-mode="multi"]').dispatchEvent(new window.Event('click', { bubbles: true }));
+  setValue(doc, 'descriptor', DESCRIPTOR);
+  click(doc, 'useDescriptorBtn');
+  setValue(doc, 'bondIndex', '2');
+  setValue(doc, 'stxAddress', ALLOWLISTED);
+
+  const [a, b] = keyInputs(doc);
+  a.value = KEY1;
+  a.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await runVerify(doc);
+  assert.match(doc.getElementById('verdictSub').textContent, /mainnet \(xpub\) keys/, 'one descriptor key remains');
+
+  b.value = KEY2;
+  b.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await runVerify(doc);
+  assert.doesNotMatch(doc.getElementById('verdictSub').textContent, /xpub/, 'every descriptor key replaced by hand');
+});
+
 test('a private key pasted into a key field is refused without being echoed', () => {
   const wif = 'KwdMAjGmerYanjeui5SHS7JkmpZvVipYvB2LJGU1ZxJwYvP98617';
-  const { doc } = loadPage();
+  const { doc, window } = loadPage();
   setValue(doc, 'bondIndex', '106');
   setValue(doc, 'stxAddress', STX);
   setValue(doc, 'pubkey', wif);
@@ -407,16 +727,43 @@ test('a private key pasted into a key field is refused without being echoed', ()
   assert.equal(err.hidden, false);
   assert.match(err.textContent, /looks like a private key/);
   assert.ok(!err.textContent.includes(wif.slice(0, 6)) && !err.textContent.includes(wif.slice(-6)));
+
+  doc.querySelector('#modeSeg [data-mode="multi"]').dispatchEvent(new window.Event('click', { bubbles: true }));
+  const [first] = keyInputs(doc);
+  first.value = wif;
+  first.dispatchEvent(new window.Event('input', { bubbles: true }));
+  click(doc, 'verifyBtn');
+  assert.match(err.textContent, /looks like a private key/);
+  assert.ok(!err.textContent.includes(wif.slice(0, 6)));
 });
 
-function fillForm(doc, window) {
+function fillForm(doc, window, mode = 'single') {
   doc.getElementById('network').value = 'mainnet';
   doc.getElementById('network').dispatchEvent(new window.Event('change', { bubbles: true }));
+  doc.querySelector(`#modeSeg [data-mode="${mode}"]`).dispatchEvent(new window.Event('click', { bubbles: true }));
+  const [a, b] = keyInputs(doc);
+  a.value = VAULT_KEYS[0];
+  b.value = VAULT_KEYS[1];
+  setValue(doc, 'threshold', '2');
   setValue(doc, 'bondIndex', '2');
   setValue(doc, 'stxAddress', ALLOWLISTED);
   setValue(doc, 'pubkey', KEY1);
-  setValue(doc, 'expected', LOCK_ADDRESS);
+  setValue(doc, 'vaultAddress', VAULT);
+  setValue(doc, 'expected', mode === 'multi' ? MULTI_LOCK_ADDRESS : LOCK_ADDRESS);
+  setValue(doc, 'descriptor', DESCRIPTOR);
 }
+
+function put(doc, field, value) {
+  if (field === 'key row') {
+    const [first] = keyInputs(doc);
+    first.value = value;
+    first.dispatchEvent(new doc.defaultView.Event('input', { bubbles: true }));
+  } else {
+    setValue(doc, field, value);
+  }
+}
+
+const fieldEl = (doc, field) => (field === 'key row' ? keyInputs(doc)[0] : doc.getElementById(field));
 
 test('a pasted expected address cannot inject markup into the checks', async () => {
   const { doc, window } = loadPage();
@@ -432,14 +779,11 @@ test('a pasted expected address cannot inject markup into the checks', async () 
   assert.equal(doc.getElementById('verdictMark').textContent, '✕');
 });
 
-test('a private key in the expected or staker field is refused without being echoed', async () => {
+test('a private key in the vault, expected or staker field is refused without being echoed', async () => {
   const wif = 'KwdMAjGmerYanjeui5SHS7JkmpZvVipYvB2LJGU1ZxJwYvP98617';
-  for (const field of ['expected', 'stxAddress']) {
+  for (const field of ['vaultAddress', 'expected', 'stxAddress']) {
     const { doc, window } = loadPage();
-    withLeather(window, [
-      { symbol: 'STX', address: ALLOWLISTED },
-      { symbol: 'BTC', type: 'p2wpkh', address: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', publicKey: KEY1 },
-    ]);
+    withLeather(window, POLICY_REPLY);
     const { fetch, calls } = stubApi();
     window.fetch = fetch;
     click(doc, 'connectBtn');
@@ -474,29 +818,32 @@ test('a staker principal that is not one is refused without echoing it', () => {
 const SCREENED = {
   bondIndex: 'bond index',
   stxAddress: 'staker principal',
-  pubkey: 'Bitcoin public key',
+  'key row': 'key #1',
+  threshold: 'threshold',
+  vaultAddress: 'vault address',
   expected: 'expected address',
   heightOverride: 'unlock height override',
 };
 
-async function sweepKeys(field, expectRefusal) {
+async function sweepKeys(field, mode, expectRefusal) {
   const { doc, window } = loadPage();
   const stub = stubApi();
   window.fetch = stub.fetch;
-  fillForm(doc, window);
+  fillForm(doc, window, mode);
   const baseline = doc.body.textContent;
 
   for (const [kind, key] of Object.entries(PRIVATE_KEYS)) {
     const fragments = Array.from({ length: key.length - 5 }, (_, i) => key.slice(i, i + 6)).filter(f => !baseline.includes(f));
     for (const [where, text] of Object.entries(embeddings(key))) {
-      fillForm(doc, window);
-      setValue(doc, field, text);
+      fillForm(doc, window, mode);
+      put(doc, field, text);
       stub.requests.length = 0;
-      const label = `${kind} ${where} in ${field}`;
-      const held = doc.getElementById(field).value;
+      const label = `${kind} ${where} in ${field} (${mode})`;
+      const held = fieldEl(doc, field).value;
 
       click(doc, 'verifyBtn');
       await settle();
+      click(doc, 'useDescriptorBtn');
 
       const sent = stub.requests.map(r => `${r.url} ${r.body}`).join('\n');
       assert.equal(fragments.find(f => sent.includes(f)), undefined, `${label}: part of the key was sent`);
@@ -507,11 +854,11 @@ async function sweepKeys(field, expectRefusal) {
   }
 }
 
-test('a private key in any field, in any wrapping, is refused by name and never reaches the page or the network', async () => {
+test('a private key in any active field, in any wrapping, is refused by name and never reaches the page or the network', async () => {
   const control = loadPage();
   const controlStub = stubApi();
   control.window.fetch = controlStub.fetch;
-  fillForm(control.doc, control.window);
+  fillForm(control.doc, control.window, 'multi');
   await runVerify(control.doc);
   assert.ok(controlStub.calls.length > 0, 'the filled form does verify when no key is present');
   assert.equal(control.doc.getElementById('verdictMark').textContent, '✓');
@@ -525,7 +872,49 @@ test('a private key in any field, in any wrapping, is refused by name and never 
     assert.equal(doc.getElementById('results').hidden, true, `${label}: nothing rendered`);
   };
 
-  for (const [field, name] of Object.entries(SCREENED)) await sweepKeys(field, refused(name));
+  for (const [field, name] of Object.entries(SCREENED)) await sweepKeys(field, 'multi', refused(name));
+  await sweepKeys('pubkey', 'single', refused('Bitcoin public key'));
+  await sweepKeys('descriptor', 'multi', ({ doc, label }) => {
+    assert.match(doc.getElementById('descriptorNote').textContent, /^The descriptor field holds what looks like a private key/, label);
+  });
+});
+
+test('fields the current mode does not read are not screened or sent', async () => {
+  const { doc, window } = loadPage();
+  const stub = stubApi();
+  window.fetch = stub.fetch;
+  fillForm(doc, window, 'single');
+  setValue(doc, 'descriptor', `wsh(multi(1,${PRIVATE_KEYS.xprv}/0/0))`);
+  setValue(doc, 'vaultAddress', PRIVATE_KEYS['WIF mainnet compressed']);
+  put(doc, 'key row', PRIVATE_KEYS['WIF testnet compressed']);
+  await runVerify(doc);
+  assert.ok(stub.calls.length > 0, 'single key verifies with junk left in the hidden multisig fields');
+
+  const multi = loadPage();
+  fillForm(multi.doc, multi.window, 'multi');
+  setValue(multi.doc, 'pubkey', PRIVATE_KEYS['WIF mainnet compressed']);
+  click(multi.doc, 'useDescriptorBtn');
+  assert.match(multi.doc.getElementById('descriptorNote').textContent, /^Filled 2 keys/);
+});
+
+test('up to 20 key rows can be added', () => {
+  const { doc, window } = loadPage();
+  doc.querySelector('#modeSeg [data-mode="multi"]').dispatchEvent(new window.Event('click', { bubbles: true }));
+  for (let i = 0; i < 25; i += 1) click(doc, 'addKeyBtn');
+  assert.equal(keyInputs(doc).length, 20);
+  for (const id of ['threshold', 'bondIndex', 'heightOverride']) {
+    assert.equal(doc.getElementById(id).type, 'text', `${id}: a text input keeps a pasted secret so it can be screened`);
+    assert.equal(doc.getElementById(id).getAttribute('inputmode'), 'numeric', id);
+  }
+});
+
+test('the vault field is required in multisig mode and says why', () => {
+  const { doc, window } = loadPage();
+  assert.match(doc.querySelector('label[for="vaultAddress"]').textContent, /required for a multisig/);
+  doc.querySelector('#modeSeg [data-mode="multi"]').dispatchEvent(new window.Event('click', { bubbles: true }));
+  assert.equal(doc.getElementById('vaultAddress').required, true);
+  doc.querySelector('#modeSeg [data-mode="single"]').dispatchEvent(new window.Event('click', { bubbles: true }));
+  assert.equal(doc.getElementById('vaultAddress').required, false);
 });
 
 test('the refused field gets focus', () => {
@@ -540,20 +929,34 @@ test('the refused field gets focus', () => {
 test('a very long paste is refused by field name before any scan', () => {
   const { doc, window } = loadPage();
   window.fetch = stubApi().fetch;
-  fillForm(doc, window);
+  fillForm(doc, window, 'multi');
   setValue(doc, 'expected', 'K'.repeat(1_000_000));
   const started = Date.now();
   click(doc, 'verifyBtn');
   assert.ok(Date.now() - started < 1000, `took ${Date.now() - started} ms`);
   assert.match(doc.getElementById('formErr').textContent, /^The expected address field is longer than 1024 characters/);
+
+  setValue(doc, 'expected', MULTI_LOCK_ADDRESS);
+  setValue(doc, 'descriptor', 'K'.repeat(1_000_000));
+  click(doc, 'useDescriptorBtn');
+  assert.match(doc.getElementById('descriptorNote').textContent, /^The descriptor field is longer than 16384 characters/);
 });
 
-test('any change to the inputs, network or wallet clears a shown result', async () => {
+test('any change to the inputs, mode, network or wallet clears a shown result', async () => {
   const changes = {
     input: (doc) => setValue(doc, 'stxAddress', NOT_LISTED),
     network: (doc, window) => {
       doc.getElementById('network').value = 'private-1';
       doc.getElementById('network').dispatchEvent(new window.Event('change', { bubbles: true }));
+    },
+    mode: (doc, window) => doc.querySelector('#modeSeg [data-mode="single"]').dispatchEvent(new window.Event('click', { bubbles: true })),
+    sort: (doc, window) => {
+      doc.getElementById('sortKeys').checked = false;
+      doc.getElementById('sortKeys').dispatchEvent(new window.Event('change', { bubbles: true }));
+    },
+    'remove key': (doc, window) => {
+      click(doc, 'addKeyBtn');
+      doc.querySelector('#keyList .keyrow:last-child button').dispatchEvent(new window.Event('click', { bubbles: true }));
     },
     connect: async (doc, window) => {
       withLeather(window, [{ symbol: 'STX', address: STX }, ...BTC_ONLY]);
@@ -565,7 +968,7 @@ test('any change to the inputs, network or wallet clears a shown result', async 
   for (const [what, change] of Object.entries(changes)) {
     const { doc, window } = loadPage();
     window.fetch = stubApi().fetch;
-    fillForm(doc, window);
+    fillForm(doc, window, 'multi');
     await runVerify(doc);
     assert.equal(doc.getElementById('verdictMark').textContent, '✓', what);
     await change(doc, window);
@@ -698,35 +1101,45 @@ test('changing the inputs cancels a running verification: its requests abort and
 });
 
 test('a typed key shaped like a Stacks private key is held back until the staker confirms it is public', async () => {
-  const { doc, window } = loadPage();
-  const stub = stubApi();
-  window.fetch = stub.fetch;
-  fillForm(doc, window);
-  setValue(doc, 'expected', '');
-  setValue(doc, 'pubkey', AMBIGUOUS_PUBKEY);
+  const setKey = (doc, mode, value) => {
+    if (mode === 'single') return setValue(doc, 'pubkey', value);
+    const row = keyInputs(doc)[1];
+    row.value = value;
+    row.dispatchEvent(new doc.defaultView.Event('input', { bubbles: true }));
+  };
+  const keyField = (doc, mode) => (mode === 'single' ? doc.getElementById('pubkey') : keyInputs(doc)[1]);
 
-  click(doc, 'verifyBtn');
-  await settle();
-  const err = doc.getElementById('formErr');
-  assert.equal(err.hidden, false);
-  assert.match(err.textContent, /exactly what a Stacks private key looks like/);
-  assert.ok(!doc.body.textContent.replace(doc.getElementById('pubkey').textContent, '').includes(AMBIGUOUS_PUBKEY.slice(10, 40)), 'not shown');
-  assert.deepEqual(stub.requests, [], 'nothing sent');
-  assert.equal(doc.getElementById('confirmPubkeysBox').hidden, false);
-  assert.equal(doc.activeElement, doc.getElementById('pubkey'), 'the key field is focused');
+  for (const mode of ['single', 'multi']) {
+    const { doc, window } = loadPage();
+    const stub = stubApi();
+    window.fetch = stub.fetch;
+    fillForm(doc, window, mode);
+    setValue(doc, 'expected', '');
+    setKey(doc, mode, AMBIGUOUS_PUBKEY);
 
-  doc.getElementById('confirmPubkeys').checked = true;
-  doc.getElementById('confirmPubkeys').dispatchEvent(new window.Event('change', { bubbles: true }));
-  await runVerify(doc);
-  assert.ok(stub.requests.length > 0, 'sent once confirmed');
+    click(doc, 'verifyBtn');
+    await settle();
+    const err = doc.getElementById('formErr');
+    assert.equal(err.hidden, false, mode);
+    assert.match(err.textContent, /exactly what a Stacks private key looks like/);
+    assert.ok(!doc.body.textContent.replace(doc.getElementById(mode === 'single' ? 'pubkey' : 'keyList').textContent, '').includes(AMBIGUOUS_PUBKEY.slice(10, 40)), `${mode}: not shown`);
+    assert.deepEqual(stub.requests, [], `${mode}: nothing sent`);
+    assert.equal(doc.getElementById('confirmPubkeysBox').hidden, false);
+    assert.equal(doc.activeElement, keyField(doc, mode), `${mode}: the key field holding the ambiguous key is focused`);
 
-  setValue(doc, 'pubkey', `${AMBIGUOUS_PUBKEY} `);
-  assert.equal(doc.getElementById('confirmPubkeys').checked, false, 'editing a key unticks the confirmation');
-  assert.equal(doc.getElementById('confirmPubkeysBox').hidden, true);
-  stub.requests.length = 0;
-  click(doc, 'verifyBtn');
-  await settle();
-  assert.deepEqual(stub.requests, [], 'asked again after an edit');
+    doc.getElementById('confirmPubkeys').checked = true;
+    doc.getElementById('confirmPubkeys').dispatchEvent(new window.Event('change', { bubbles: true }));
+    await runVerify(doc);
+    assert.ok(stub.requests.length > 0, `${mode}: sent once confirmed`);
+
+    setKey(doc, mode, `${AMBIGUOUS_PUBKEY} `);
+    assert.equal(doc.getElementById('confirmPubkeys').checked, false, `${mode}: editing a key unticks the confirmation`);
+    assert.equal(doc.getElementById('confirmPubkeysBox').hidden, true);
+    stub.requests.length = 0;
+    click(doc, 'verifyBtn');
+    await settle();
+    assert.deepEqual(stub.requests, [], `${mode}: asked again after an edit`);
+  }
 });
 
 test('a key Leather supplies as a public key needs no confirmation, even when it ends in 01', async () => {
@@ -759,23 +1172,164 @@ test('a key Leather supplies as a public key needs no confirmation, even when it
   assert.match(doc.getElementById('formErr').textContent, /exactly what a Stacks private key looks like/);
 });
 
+test('a raw key typed into a descriptor is not trusted for being in a descriptor', async () => {
+  const { doc, window } = loadPage();
+  const stub = stubApi();
+  window.fetch = stub.fetch;
+  fillForm(doc, window, 'multi');
+  setValue(doc, 'descriptor', `wsh(multi(1,${AMBIGUOUS_PUBKEY},${VAULT_KEYS[0]}))`);
+  click(doc, 'useDescriptorBtn');
+  assert.deepEqual(keyInputs(doc).map(i => i.value), [AMBIGUOUS_PUBKEY, VAULT_KEYS[0]]);
+  stub.requests.length = 0;
+  click(doc, 'verifyBtn');
+  await settle();
+  assert.match(doc.getElementById('formErr').textContent, /exactly what a Stacks private key looks like/);
+  assert.deepEqual(stub.requests, []);
+});
+
+const [XPUB_A, XPUB_B] = DESCRIPTOR.match(/xpub[1-9A-HJ-NP-Za-km-z]+/g);
+const AMBIGUOUS_DERIVED = '03c000bec4a37a8e36509d13631039f3b511d83277c1b07f4aee6c79b869dab801';
+const AMBIGUOUS_XPUB_DESCRIPTOR = `wsh(sortedmulti(2,${XPUB_A}/0/267,${XPUB_B}/0/0,${XPUB_A}/0/0))`;
+
+test('a key derived from an xpub in a descriptor needs no confirmation, until something could have replaced it', async () => {
+  const refusedUntilConfirmed = async (doc, stub, why) => {
+    stub.requests.length = 0;
+    click(doc, 'verifyBtn');
+    await settle();
+    assert.deepEqual(stub.requests, [], `${why}: nothing sent`);
+    assert.match(doc.getElementById('formErr').textContent, /exactly what a Stacks private key looks like/, why);
+    assert.equal(doc.getElementById('confirmPubkeysBox').hidden, false, why);
+  };
+  const trustedAgain = async (doc, stub, why) => {
+    stub.requests.length = 0;
+    await runVerify(doc);
+    assert.ok(stub.requests.length > 0, `${why}: sent`);
+    assert.equal(doc.getElementById('confirmPubkeysBox').hidden, true, why);
+  };
+  const fillFromDescriptor = doc => {
+    setValue(doc, 'descriptor', AMBIGUOUS_XPUB_DESCRIPTOR);
+    click(doc, 'useDescriptorBtn');
+    assert.deepEqual(keyInputs(doc).map(i => i.value), [AMBIGUOUS_DERIVED, VAULT_KEYS[1], VAULT_KEYS[0]]);
+  };
+  const switchMode = (doc, mode) => doc.querySelector(`#modeSeg [data-mode="${mode}"]`).dispatchEvent(new doc.defaultView.Event('click', { bubbles: true }));
+
+  const { doc, window } = loadPage();
+  const stub = stubApi();
+  window.fetch = stub.fetch;
+  fillForm(doc, window, 'multi');
+  setValue(doc, 'expected', '');
+
+  fillFromDescriptor(doc);
+  await trustedAgain(doc, stub, 'derived from the descriptor');
+
+  put(doc, 'key row', `${AMBIGUOUS_DERIVED} `);
+  await refusedUntilConfirmed(doc, stub, 'a row edit');
+
+  fillFromDescriptor(doc);
+  await trustedAgain(doc, stub, 'filled again');
+  doc.querySelectorAll('#keyList button')[2].dispatchEvent(new window.Event('click', { bubbles: true }));
+  await refusedUntilConfirmed(doc, stub, 'a removed row');
+
+  fillFromDescriptor(doc);
+  switchMode(doc, 'single');
+  switchMode(doc, 'multi');
+  await refusedUntilConfirmed(doc, stub, 'a mode switch');
+
+  fillFromDescriptor(doc);
+  withLeather(window, [{ symbol: 'STX', address: ALLOWLISTED }]);
+  click(doc, 'connectBtn');
+  await settle();
+  assert.equal(doc.getElementById('paneMulti').hidden, false, 'a wallet without a vault leaves the mode alone');
+  assert.deepEqual(keyInputs(doc).map(i => i.value), [AMBIGUOUS_DERIVED, VAULT_KEYS[1], VAULT_KEYS[0]], 'and the descriptor keys in place');
+  await refusedUntilConfirmed(doc, stub, 'a wallet connect');
+
+  fillFromDescriptor(doc);
+  await trustedAgain(doc, stub, 'filled again while connected');
+  click(doc, 'disconnectBtn');
+  setValue(doc, 'stxAddress', ALLOWLISTED);
+  await refusedUntilConfirmed(doc, stub, 'a wallet disconnect');
+
+  setValue(doc, 'descriptor', `wsh(sortedmulti(2,${AMBIGUOUS_DERIVED},${XPUB_B}/0/0))`);
+  click(doc, 'useDescriptorBtn');
+  await refusedUntilConfirmed(doc, stub, 'the same key written raw in a descriptor');
+});
+
+test('a Leather policy account whose descriptor derives such a key needs no confirmation either', async () => {
+  const { doc, window } = loadPage();
+  withLeather(window, [{ symbol: 'STX', address: ALLOWLISTED }, { symbol: 'BTC', type: 'p2wsh', address: VAULT, descriptor: AMBIGUOUS_XPUB_DESCRIPTOR }]);
+  const stub = stubApi();
+  window.fetch = stub.fetch;
+  click(doc, 'connectBtn');
+  await settle();
+  assert.deepEqual(keyInputs(doc).map(i => i.value), [AMBIGUOUS_DERIVED, VAULT_KEYS[1], VAULT_KEYS[0]]);
+  setValue(doc, 'bondIndex', '2');
+  await runVerify(doc);
+  assert.ok(stub.requests.length > 0);
+  assert.equal(doc.getElementById('confirmPubkeysBox').hidden, true);
+
+  put(doc, 'key row', ` ${AMBIGUOUS_DERIVED}`);
+  stub.requests.length = 0;
+  click(doc, 'verifyBtn');
+  await settle();
+  assert.deepEqual(stub.requests, [], 'after an edit the key is no longer the one Leather filled in');
+  assert.match(doc.getElementById('formErr').textContent, /exactly what a Stacks private key looks like/);
+});
+
 const AMBIGUOUS_2 = '037777777777777777777777777777777777777777777777777777777777777301';
 
-test('the public-key confirmation covers only the exact key it was given; every change to it asks again', async () => {
+test('the public-key confirmation covers only the exact keys it was given; every change to them asks again', async () => {
   const tick = doc => {
     const box = doc.getElementById('confirmPubkeys');
     box.checked = true;
     box.dispatchEvent(new doc.defaultView.Event('change', { bubbles: true }));
   };
+  const switchMode = (doc, mode) => doc.querySelector(`#modeSeg [data-mode="${mode}"]`).dispatchEvent(new doc.defaultView.Event('click', { bubbles: true }));
+  const setRows = (doc, keys) => {
+    while (keyInputs(doc).length < keys.length) click(doc, 'addKeyBtn');
+    keys.forEach((k, i) => {
+      keyInputs(doc)[i].value = k;
+    });
+    keyInputs(doc)[0].dispatchEvent(new doc.defaultView.Event('input', { bubbles: true }));
+  };
   const transitions = {
-    'none (control)': { act: () => {} },
-    'edit to another such key': { act: doc => setValue(doc, 'pubkey', AMBIGUOUS_2) },
+    'none (control)': { mode: 'single', act: () => {} },
+    'edit to another such key': { mode: 'single', act: doc => setValue(doc, 'pubkey', AMBIGUOUS_2) },
     'value replaced without an input event (autofill, an extension)': {
+      mode: 'single',
       act: doc => {
         doc.getElementById('pubkey').value = AMBIGUOUS_2;
       },
     },
+    'row replaced without an input event': {
+      mode: 'multi',
+      act: doc => {
+        keyInputs(doc)[0].value = AMBIGUOUS_2;
+      },
+    },
+    'descriptor fill with another such key': {
+      mode: 'multi',
+      act: doc => {
+        setValue(doc, 'descriptor', `wsh(multi(1,${AMBIGUOUS_2},${VAULT_KEYS[0]}))`);
+        click(doc, 'useDescriptorBtn');
+      },
+    },
+    'descriptor fill with the same keys': {
+      mode: 'multi',
+      act: doc => {
+        setValue(doc, 'descriptor', `wsh(multi(1,${AMBIGUOUS_PUBKEY},${VAULT_KEYS[0]}))`);
+        click(doc, 'useDescriptorBtn');
+      },
+    },
+    'mode switch to multisig': { mode: 'single', act: doc => switchMode(doc, 'multi') },
+    'mode switch and back': { mode: 'multi', act: doc => (switchMode(doc, 'single'), switchMode(doc, 'multi')) },
+    'add a row': { mode: 'multi', act: doc => click(doc, 'addKeyBtn') },
+    'remove a row': {
+      mode: 'multi',
+      rows: [AMBIGUOUS_PUBKEY, VAULT_KEYS[0], VAULT_KEYS[1]],
+      act: doc => doc.querySelectorAll('#keyList button')[2].dispatchEvent(new doc.defaultView.Event('click', { bubbles: true })),
+    },
     'network change and back': {
+      mode: 'single',
       act: doc => {
         for (const net of ['private-1', 'mainnet']) {
           doc.getElementById('network').value = net;
@@ -783,17 +1337,20 @@ test('the public-key confirmation covers only the exact key it was given; every 
         }
       },
     },
-    'wallet connect': { act: async (doc, window) => (withLeather(window, [{ symbol: 'STX', address: ALLOWLISTED }]), click(doc, 'connectBtn'), await settle()) },
+    'wallet connect': { mode: 'single', act: async (doc, window) => (withLeather(window, [{ symbol: 'STX', address: ALLOWLISTED }]), click(doc, 'connectBtn'), await settle()) },
+    'wallet disconnect': { mode: 'single', before: async (doc, window) => (withLeather(window, [{ symbol: 'STX', address: ALLOWLISTED }]), click(doc, 'connectBtn'), await settle()), act: doc => click(doc, 'disconnectBtn') },
   };
 
-  for (const [name, { act }] of Object.entries(transitions)) {
+  for (const [name, { mode, rows, act, before }] of Object.entries(transitions)) {
     const { doc, window } = loadPage();
     const stub = stubApi();
     window.fetch = stub.fetch;
-    fillForm(doc, window);
+    fillForm(doc, window, mode);
     setValue(doc, 'expected', '');
+    if (before) await before(doc, window);
     setValue(doc, 'stxAddress', ALLOWLISTED);
     setValue(doc, 'pubkey', AMBIGUOUS_PUBKEY);
+    setRows(doc, rows ?? [AMBIGUOUS_PUBKEY, VAULT_KEYS[0]]);
     tick(doc);
     await act(doc, window);
     stub.requests.length = 0;

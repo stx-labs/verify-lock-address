@@ -114,11 +114,13 @@ const PUBLIC_HEX_RE = /^(0[23]|0020|5120)[0-9a-f]{64}$/i;
 const RAW_KEY_LENGTH = 64;
 const MAX_PADDED_KEY_LENGTH = 69;
 const COMPRESSED_KEY_BYTES = 33;
-const KEY_LIST_RE = /^(?:0[23][0-9a-f]{64})+$/i;
+const KEY_LIST_RE = /^\d{0,2}((?:0[23][0-9a-f]{64})+)$/i;
+const DESCRIPTOR_CHECKSUM_RE = /#[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{8}$/;
 const UNLOCK_SCRIPTS_RE = /^(?:210[23][0-9a-f]{64}a[cd]|(?:5[1-9a-f]|60|01[0-9a-f]{2})(?:210[23][0-9a-f]{64})+(?:5[1-9a-f]|60|01[0-9a-f]{2})a[ef])+$/i;
 
 function publicKeysIn(run: string): string[] | null {
-  if (KEY_LIST_RE.test(run)) return run.match(/.{66}/g) ?? [];
+  const list = run.match(KEY_LIST_RE);
+  if (list) return list[1].match(/.{66}/g) ?? [];
   if (!UNLOCK_SCRIPTS_RE.test(run)) return null;
   return disassemble(hexToBytes(run)).flatMap(t => (t.kind === 'push' && t.len === COMPRESSED_KEY_BYTES ? [t.text] : []));
 }
@@ -134,12 +136,13 @@ function hexRunKind(run: string): SecretKind | null {
   if (run.length > MAX_PADDED_KEY_LENGTH) return longHexRunKind(run);
   if (run.length === RAW_KEY_LENGTH) return 'private';
   if (AMBIGUOUS_KEY_RE.test(run)) return 'ambiguous';
-  return PUBLIC_HEX_RE.test(run) ? null : 'private';
+  return PUBLIC_HEX_RE.test(run) ? null : longHexRunKind(run);
 }
 
 export function readings(text: string): string[] {
   const normal = text.normalize('NFKC').replace(/\p{Cf}/gu, '');
-  return [...new Set([text, normal, normal.replace(/\s+/g, ''), normal.replace(NOT_KEY_MATERIAL, '')])];
+  const compact = normal.replace(/\s+/g, '');
+  return [...new Set([text, normal, compact, compact.replace(DESCRIPTOR_CHECKSUM_RE, '').replace(NOT_KEY_MATERIAL, '')])];
 }
 
 export function classifySecret(value: unknown): SecretKind | null {

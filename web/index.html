@@ -339,6 +339,25 @@
       box-shadow: var(--elevation-sm);
     }
 
+    .multi {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .multi > .banner { grid-column: 1 / -1; margin: 0; }
+    .banner code { overflow-wrap: anywhere; }
+
+    .keys { display: flex; flex-direction: column; gap: 8px; }
+
+    details.field summary {
+      font-size: var(--fs-xs);
+      font-weight: var(--fw-medium);
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+
     .keyrow {
       display: flex;
       align-items: center;
@@ -693,7 +712,7 @@
       body { padding: 24px 12px; }
       .card > header { padding: 0 16px; flex-wrap: wrap; }
       .hero { padding: 36px var(--gutter) 28px; }
-      .grid { grid-template-columns: 1fr; }
+      .grid, .multi { grid-template-columns: 1fr; }
       .tiles { grid-template-columns: 1fr 1fr; }
       .split { flex-direction: column; align-items: stretch; gap: 22px; }
       .actions { flex-wrap: wrap; }
@@ -751,9 +770,9 @@
     <section class="pane">
       <h2 class="pane-title">Inputs</h2>
       <p class="pane-sub">
-        Connecting Leather prefills the Stacks address and Bitcoin public key, and both stay
-        editable. The unlock tail built here is the single-key form,
-        <code>&lt;pubkey&gt; OP_CHECKSIG</code>.
+        Connecting Leather prefills the Stacks address and Bitcoin public key — or, from a
+        multisig (policy) account, the vault's keys and threshold. Everything stays editable,
+        and a multisig can also be entered by hand or from a descriptor.
       </p>
 
       <div class="banner info" id="walletNote" hidden></div>
@@ -778,11 +797,64 @@
         </div>
 
         <div class="field wide">
+          <label>Unlock policy <span class="hint">who can spend the BTC once the timelock ends</span></label>
+          <div class="seg" id="modeSeg" role="tablist" aria-label="Unlock policy">
+            <button type="button" role="tab" data-mode="single" aria-selected="true">Single key</button>
+            <button type="button" role="tab" data-mode="multi" aria-selected="false">Multisig</button>
+          </div>
+        </div>
+
+        <div class="field wide" id="paneSingle">
           <label for="pubkey">
             Bitcoin public key
             <span class="hint">33-byte compressed, 02… / 03… — becomes &lt;pubkey&gt; OP_CHECKSIG</span>
           </label>
           <input type="text" id="pubkey" spellcheck="false" autocomplete="off" placeholder="02a1633cafcc01ebfb6d78e39f687a1f0995c62fc95f51ead10a02ee0be551b5dc" />
+        </div>
+
+        <div class="multi" id="paneMulti" hidden>
+          <div class="banner info" id="vaultInfo" hidden></div>
+
+          <div class="field wide">
+            <label>
+              Public keys
+              <span class="hint">33-byte compressed — becomes OP_m &lt;keys…&gt; OP_n OP_CHECKMULTISIG</span>
+            </label>
+            <div class="keys" id="keyList"></div>
+            <div>
+              <button type="button" class="btn btn-secondary btn-sm" id="addKeyBtn">Add key</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="threshold">Threshold <span class="hint">signatures required (m)</span></label>
+            <input type="text" id="threshold" value="2" inputmode="numeric" autocomplete="off" />
+          </div>
+
+          <div class="field">
+            <label>Key order <span class="hint">changes the address</span></label>
+            <label class="checkline" for="sortKeys">
+              <input type="checkbox" id="sortKeys" checked />
+              Sort keys (BIP-67, <code>sortedmulti</code>)
+            </label>
+          </div>
+
+          <div class="field wide">
+            <label for="vaultAddress">
+              Vault address
+              <span class="hint">required for a multisig — copy it from your wallet; it is the only thing tying these keys to your vault</span>
+            </label>
+            <input type="text" id="vaultAddress" spellcheck="false" autocomplete="off" placeholder="bc1q… (62 characters)" />
+          </div>
+
+          <details class="field wide" id="descriptorBox">
+            <summary>Paste a descriptor instead</summary>
+            <textarea id="descriptor" rows="3" spellcheck="false" autocomplete="off" placeholder="wsh(sortedmulti(2,xpub…/0/0,xpub…/0/0))#checksum"></textarea>
+            <div>
+              <button type="button" class="btn btn-secondary btn-sm" id="useDescriptorBtn">Fill keys from descriptor</button>
+            </div>
+            <div class="note tight" id="descriptorNote" hidden></div>
+          </details>
         </div>
 
         <div class="field wide">
@@ -899,10 +971,11 @@
       <section class="pane">
         <h2 class="pane-title">Before you approve</h2>
         <p class="pane-sub">
-          The first three compare your inputs, in your browser, against <code>pox-5</code>: the output
-          script, the address you pasted, and the unlock tail. Each is marked ✓ passed, ✕ failed, or
-          — could not be run; the verdict is a match only when every one passed. The last two only
-          you can confirm — this page cannot tell whether the keys are yours.
+          The checks above the last two compare your inputs, in your browser, against <code>pox-5</code>:
+          the output script, the unlock tail, your vault (for a multisig), and the address you pasted.
+          Each is marked ✓ passed, ✕ failed, or — could not be run; the verdict is a match only when
+          every one passed. The last two only you can confirm — this page cannot tell whether the keys
+          are yours.
         </p>
         <div class="checks" id="checks"></div>
       </section>

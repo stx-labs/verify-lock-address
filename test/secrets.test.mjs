@@ -115,6 +115,44 @@ test('a long hex run passes only as a list of compressed keys or a chain of sing
   }
 });
 
+test('a descriptor of raw keys survives the reading that strips its separators: threshold digits may precede the key list, and a #checksum is dropped', () => {
+  const secret = PK_C.slice(2);
+  const descriptors = {
+    'one key': `wsh(multi(1,${PK}))`,
+    'two-digit threshold': `wsh(multi(12,${Array(12).fill(PK).join(',')},${PK_C}))`,
+    'leading zero threshold': `wsh(multi(01,${PK_C}))`,
+    'three keys with an all-hex checksum': `wsh(multi(2,${PK},${PK_C},${PK_NO_ZERO}))#deadfeed`,
+    'sortedmulti with a checksum': `wsh(sortedmulti(2,${PK},${PK_C}))#3wv0784k`,
+    'spaces and newlines': `  wsh(multi(1,\n  ${PK.toUpperCase()}))  `,
+    'whitespace after the checksum': `wsh(multi(1,${PK}))#3wv0784k \n`,
+  };
+  for (const [what, text] of Object.entries(descriptors)) {
+    assert.equal(classifySecret(text), null, what);
+    assert.doesNotThrow(() => assertNoPrivateKey(text), what);
+  }
+  assert.equal(classifySecret(`wsh(multi(1,${AMBIGUOUS_PUBKEY},${PK}))#3wv0784k`), 'ambiguous');
+  const refused = {
+    'threshold before a raw key': `wsh(multi(1,${secret}))`,
+    'threshold before a raw key with a checksum': `wsh(multi(2,${PK},${secret}))#3wv0784k`,
+    'threshold before a Stacks private key': `wsh(multi(1,${PRIVATE_KEYS['Stacks hex private key']},${PK}))`,
+    'a secret split by a # that is not a checksum': `wsh(multi(1,${PK}))#${secret.slice(0, 20)}.${secret.slice(20)}`,
+    'three digits before a key': `100${PK}`,
+    'one hex character after a key': `${PK}3`,
+    'a checksum of seven characters': `wsh(multi(2,${PK},${PK_C}))#3wv0784`,
+    'a checksum of nine characters': `wsh(multi(2,${PK},${PK_C}))#3wv0784kk`,
+    'a checksum with a character outside bech32': `wsh(multi(2,${PK},${PK_C}))#3wv0784b`,
+    'a checksum that is not the last thing': `wsh(multi(2,${PK},${PK_C}))#3wv0784k,${PK_NO_ZERO}`,
+    'digits before a raw key': `12${secret}`,
+    'stray hex around a raw key': `1${secret}f`,
+    'letters before a key': `ab${PK}`,
+    'word before a key list': `deadbeef${PK}${PK_C}`,
+  };
+  for (const [what, text] of Object.entries(refused)) {
+    assert.equal(classifySecret(text), 'private', what);
+    assert.throws(() => assertNoPrivateKey(text), e => e.message === PRIVATE_KEY_ERROR, what);
+  }
+});
+
 test('a 66-hex value starting 02/03 and ending 01 is ambiguous: allowed only in a key field, refused everywhere else', () => {
   assert.equal(classifySecret(AMBIGUOUS_PUBKEY), 'ambiguous');
   assert.equal(containsAmbiguousKey(AMBIGUOUS_PUBKEY), true);

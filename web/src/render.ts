@@ -4,9 +4,9 @@ import { fill, h, paragraphs } from './dom.ts';
 import type { Child } from './dom.ts';
 import { annotate, disassemble, tokenClass, tokenText } from './script-view.ts';
 import type { Segment } from './script-view.ts';
-import type { VerifyResult } from './types.ts';
-import { computeVerdict, revealsComputed } from './verdict.ts';
-import type { Check, CheckId, Verdict, VerdictState } from './verdict.ts';
+import type { VaultCheck, VaultReason, VerifyResult } from './types.ts';
+import { computeVerdict, revealsComputed, VAULT_REASONS } from './verdict.ts';
+import type { Check, CheckId, CheckStatus, Verdict, VerdictState } from './verdict.ts';
 
 interface CheckWords {
   title: string;
@@ -229,10 +229,79 @@ function tailText(check: Check, result: VerifyResult): CheckWords {
   };
 }
 
+const VAULT_SUB = 'Copy your multisig vault address from your wallet into "Vault address", then verify again.';
+
+const knownVaultCheck = (check: Check) =>
+  Object.hasOwn(VAULT_REASONS, check.status) && VAULT_REASONS[check.status as CheckStatus].includes(check.reason as VaultReason);
+
+function vaultText(check: Check, result: VerifyResult): CheckWords {
+  const v: Partial<VaultCheck> = result.vault ?? {};
+  const differs = [h('br'), `Vault ${v.display ?? '(not readable)'}.`];
+  const fail = (why: string) => ({
+    title: 'The keys do not reproduce your vault address — do not fund this address',
+    headline: 'The keys do not reproduce your vault',
+    detail: [why, differs],
+  });
+  const holdBack = (title: string, detail: string) => ({
+    title,
+    headline: 'Not verified — copy your vault address from your wallet',
+    sub: VAULT_SUB,
+    detail,
+  });
+  if (!knownVaultCheck(check)) {
+    return holdBack('The vault check gave a result this page does not recognise — not verified', 'Verify again.');
+  }
+  switch (check.reason) {
+    case 'match':
+    case 'match-p2sh':
+      return {
+        title: 'These keys and this threshold reproduce your vault address',
+        detail:
+          `The multisig tail alone hashes to ${v.display}` +
+          (check.reason === 'match-p2sh' ? ' (its P2SH-wrapped form)' : '') +
+          ' — the same keys, threshold and order your wallet spends with.',
+      };
+    case 'match-p2sh-legacy':
+      return {
+        title: 'These keys and this threshold reproduce your vault address (a legacy P2SH multisig)',
+        detail:
+          `${v.display} is the legacy sh(multi) form of exactly these keys, threshold and order. The lockup spends ` +
+          'the same script as P2WSH, so make sure your wallet can sign a segwit spend for this vault.',
+      };
+    case 'wrong-network':
+      return fail('The vault address is for a different network than the one selected.');
+    case 'other-order':
+      return fail('The other key order would match your vault — flip "Sort keys (BIP-67)" to match your wallet.');
+    case 'not-p2wsh':
+      return fail('That is not a multisig vault address: it is not a P2WSH, P2SH-wrapped P2WSH or P2SH multisig script, so no set of keys entered here can reproduce it.');
+    case 'mismatch':
+      return fail('A key, the threshold, or the key order differs from the vault your wallet holds.');
+    case 'witness-script':
+      return holdBack(
+        'That is the vault’s witness script, not its address — not verified',
+        'The witness script is built from the keys entered here, so it cannot show they are your wallet’s. Paste the vault address your wallet shows.'
+      );
+    case 'mixed-case':
+    case 'unreadable':
+      return holdBack(
+        'Could not read the vault address — not verified',
+        'It is not a Bitcoin address or output script this page can decode, so nothing ties the keys to your wallet.'
+      );
+    case 'missing':
+      return holdBack(
+        'Vault address not supplied — this page cannot tie the keys to your wallet',
+        "Without your vault's address, copied from your wallet, nothing shows these keys, threshold and order are the ones your wallet spends with."
+      );
+    default:
+      return holdBack('The vault check gave a result this page does not recognise — not verified', 'Verify again.');
+  }
+}
+
 const CHECK_TEXT: Record<CheckId, CheckText> = {
   script: scriptText,
   expected: expectedText,
   tail: tailText,
+  vault: vaultText,
 };
 
 function checkText(check: Check, result: VerifyResult): CheckWords {

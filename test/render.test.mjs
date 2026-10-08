@@ -8,7 +8,7 @@ import { buildLockScript } from '@stacks/bitcoin-staking';
 import { bytesToHex, hexToBytes } from '@stacks/common';
 import { JSDOM } from 'jsdom';
 
-import { p2wshScript } from '../web/src/address.ts';
+import { p2wshScript, vaultScripts } from '../web/src/address.ts';
 import { NETWORKS, outputScriptToAddress } from '../web/src/lock.ts';
 import { describeUnlockScript } from '../web/src/script-view.ts';
 import { computeVerdict, deriveChecks, REQUIRED_CHECKS } from '../web/src/verdict.ts';
@@ -53,6 +53,8 @@ function page() {
   return { doc, window: dom.window, text, el: id => doc.getElementById(id) };
 }
 
+const VAULT_ADDRESS = 'bcrt1qvaultvaultvault';
+
 function fakeResult(overrides = {}) {
   const unlockBytes = hexToBytes(UNLOCK_HEX);
   const lockScript = buildLockScript({ stxAddress: STX, unlockHeight: 4690, unlockBytes, earlyUnlockBytes: EARLY });
@@ -72,6 +74,7 @@ function fakeResult(overrides = {}) {
     contractScript: script,
     agree: true,
     address,
+    vault: { status: 'pass', reason: 'match', display: VAULT_ADDRESS },
     comparison: { match: true, reason: 'match', display: address },
     notes: [],
     bondIndex: 106,
@@ -146,7 +149,11 @@ test('with no address supplied the verdict stays provisional', () => {
   assert.match(text('checks'), /No address supplied/);
 });
 
-test('the address for the other key order is never printed', () => {
+test('a banner address can wrap, so a narrow screen does not clip the form', () => {
+  assert.match(html, /\.banner code\s*\{[^}]*overflow-wrap:\s*anywhere/);
+});
+
+test('the other key order is named when it would match the vault, and its address is never printed', () => {
   const { text, doc } = page();
   const otherOrder = outputScriptToAddress(p2wshScript(buildLockScript({
     stxAddress: STX,
@@ -154,11 +161,20 @@ test('the address for the other key order is never printed', () => {
     unlockBytes: hexToBytes(`5121${KEY2}21${KEY1}52ae`),
     earlyUnlockBytes: EARLY,
   })), 'bcrt');
-  for (const comparison of [null, { match: false, reason: 'mismatch', display: 'bcrt1qsupplied' }]) {
-    renderResult(fakeResult({ comparison }));
-    assert.ok(!doc.body.textContent.includes(otherOrder), `${comparison?.reason}`);
-    assert.doesNotMatch(text('verdictSub'), /With the keys|the address would be/);
+  for (const vault of [
+    null,
+    { status: 'unknown', reason: 'missing', display: null },
+    { status: 'fail', reason: 'other-order', display: VAULT_ADDRESS },
+    { status: 'pass', reason: 'match', display: VAULT_ADDRESS },
+  ]) {
+    for (const comparison of [null, { match: false, reason: 'mismatch', display: 'bcrt1qsupplied' }]) {
+      renderResult(fakeResult({ vault, comparison, altLabel: 'in the order you entered' }));
+      assert.ok(!doc.body.textContent.includes(otherOrder), `${vault?.reason} ${comparison?.reason}`);
+      assert.doesNotMatch(text('verdictSub'), /With the keys|the address would be/);
+    }
   }
+  renderResult(fakeResult({ vault: { status: 'fail', reason: 'other-order', display: VAULT_ADDRESS } }));
+  assert.match(text('checks'), /The other key order would match your vault — flip "Sort keys \(BIP-67\)"/);
 });
 
 test("a derived height names the SDK's computation as its source", () => {
@@ -181,11 +197,16 @@ test('an override is described as one, against the derived height', () => {
 test('the checklist intro lists the checks without claiming any of them ran', () => {
   assert.doesNotMatch(html, /first three are checked here/);
   const intro = html.match(/<h2 class="pane-title">Before you approve<\/h2>\s*<p class="pane-sub">([\s\S]*?)<\/p>/)[1].replace(/\s+/g, ' ');
-  for (const part of [/output script/, /unlock tail/, /address you pasted/, /last two/]) {
+  for (const part of [/output script/, /unlock tail/, /vault/, /address you pasted/, /last two/]) {
     assert.match(intro, part);
   }
   assert.doesNotMatch(intro, /runs here|checked here|were run|ran here/);
   assert.match(intro, /could not be run/);
+});
+
+test('the sort-keys caption sits next to its checkbox', () => {
+  assert.match(html, /\.field label\.checkline\s*\{[^}]*justify-content:\s*flex-start/);
+  assert.match(html, /<label class="checkline" for="sortKeys">/);
 });
 
 test('a single-sig result renders its own vocabulary', () => {
@@ -196,6 +217,7 @@ test('a single-sig result renders its own vocabulary', () => {
   renderResult(
     fakeResult({
       mode: 'single',
+      vault: null,
       tail: describeUnlockScript(unlockBytes),
       unlockBytes,
       lockScript,
@@ -209,12 +231,44 @@ test('a single-sig result renders its own vocabulary', () => {
   assert.equal(text('tPolicy'), 'single key');
   assert.match(text('asmOut'), /final authorisation — one signature/);
   assert.doesNotMatch(text('checks'), /1-of-N policy/);
+  assert.doesNotMatch(text('checks'), /vault/i);
 });
 
 test('mainnet renders bc1 addresses', () => {
   const result = fakeResult();
   assert.ok(outputScriptToAddress(result.contractScript, NETWORKS.mainnet.hrp).startsWith('bc1q'));
   assert.ok(outputScriptToAddress(result.contractScript, NETWORKS['private-1'].hrp).startsWith('bcrt1q'));
+});
+
+test('a multisig with no vault address is not verified, asks for the wallet’s address, and never prints the derived one', () => {
+  const { el, text, doc } = page();
+  renderResult(fakeResult({ vault: { status: 'unknown', reason: 'missing', display: null, derived: 'bcrt1qderivedvault' } }));
+  assert.equal(text('verdictMark'), '!');
+  assert.equal(el('verdict').className, 'verdict warn');
+  assert.equal(text('verdictTitle'), 'Not verified — copy your vault address from your wallet');
+  assert.match(text('verdictSub'), /Copy your multisig vault address from your wallet/);
+  assert.match(text('checks'), /Vault address not supplied — this page cannot tie the keys to your wallet/);
+  assert.doesNotMatch(doc.body.textContent, /bcrt1qderivedvault/, 'the derived vault is never offered for pasting back');
+
+  for (const reason of ['unreadable', 'mixed-case', 'witness-script']) {
+    renderResult(fakeResult({ vault: { status: 'unknown', reason, display: null, derived: 'bcrt1qderivedvault' } }));
+    assert.equal(text('verdictTitle'), 'Not verified — copy your vault address from your wallet', reason);
+    assert.doesNotMatch(doc.body.textContent, /bcrt1qderivedvault/, reason);
+  }
+
+  for (const reason of ['mismatch', 'wrong-network', 'not-p2wsh', 'other-order']) {
+    renderResult(fakeResult({ vault: { status: 'fail', reason, display: 'bcrt1qtheirs', derived: 'bcrt1qderivedvault' } }));
+    assert.match(text('checks'), /Vault bcrt1qtheirs\./, reason);
+    assert.doesNotMatch(doc.body.textContent, /bcrt1qderivedvault/, `${reason}: not even as the differing side`);
+  }
+
+  renderResult(fakeResult({ vault: { status: 'fail', reason: 'brand-new-reason', display: 'bcrt1qtheirs', derived: 'x' } }));
+  assert.equal(text('verdictMark'), '!');
+  assert.match(text('checks'), /does not recognise/);
+  assert.doesNotMatch(text('checks'), /not supplied/);
+
+  renderResult(fakeResult({ vault: null }));
+  assert.equal(text('verdictMark'), '!', 'a multisig result without a vault check at all is not verified either');
 });
 
 test('with no expected address the lock address and output script are withheld', () => {
@@ -255,15 +309,17 @@ const SCENARIOS = {
   mismatch: () =>
     fakeResult({
       notes: ['a note'],
+      vault: { status: 'fail', reason: 'mismatch', display: 'bcrt1qvault' },
       comparison: { match: false, reason: 'mismatch', display: 'bcrt1qsupplied' },
     }),
+  'wrong vault network': () => fakeResult({ vault: { status: 'fail', reason: 'wrong-network', display: 'bcrt1qvault' } }),
   overridden: () => fakeResult({ heightOverridden: true }),
   match: () => fakeResult({ notes: ['a note'] }),
 };
 
 const NOT_RENDERED = new Map([
   [/^mode$/, 'selects the required checks'],
-  [/^comparison\.reason$/, 'enum read by deriveChecks'],
+  [/^(vault\.status|vault\.reason|comparison\.reason)$/, 'enum read by deriveChecks'],
   [/^tail\.(kind|threshold|total)$/, 'drives the tail check and the 1-of-N sentence'],
   [/^net\.(badge|boot|prefixes\.\d+|stacks\..+)$/, 'network constants used by the form and the reads, not the result'],
 ]);
@@ -295,7 +351,7 @@ test('every string and number a result carries is rendered as text, and never as
   }
   const missing = [...seen].filter(key => !rendered.has(key) && !notRenderedReason(key));
   assert.deepEqual(missing, [], 'every field is rendered as text in some scenario, or listed with the reason it is not');
-  for (const key of ['notes.0', 'comparison.display', 'stxAddress', 'tail.label', 'tail.keys.0']) {
+  for (const key of ['notes.0', 'vault.display', 'comparison.display', 'stxAddress', 'tail.label', 'tail.keys.0']) {
     assert.ok(rendered.has(key), `${key} reaches the page as text`);
   }
 });
@@ -333,6 +389,7 @@ test('the verdict is ✓ only when every required check passes (table over each 
     assert.equal(computeVerdict({ mode, checks: [...allPass, { id: 'extra', status: 'unknown' }] }).state, 'unverified');
   }
   assert.equal(computeVerdict({ mode: 'single', checks: REQUIRED_CHECKS.single.map(id => ({ id, status: 'pass' })) }).state, 'match');
+  assert.equal(computeVerdict({ mode: 'multi', checks: REQUIRED_CHECKS.single.map(id => ({ id, status: 'pass' })) }).state, 'unverified');
   assert.equal(computeVerdict({ mode: 'other', checks: REQUIRED_CHECKS.multi.map(id => ({ id, status: 'pass' })) }).state, 'unverified');
   assert.equal(computeVerdict({ checks: [] }).state, 'unverified');
   assert.equal(computeVerdict(undefined).state, 'unverified');
@@ -347,7 +404,7 @@ test('the rendered banner, title and mark follow the single verdict for each req
         [null, '!', 'verdict warn'],
       ]) {
         const { el, text } = page();
-        const base = fakeResult(mode === 'single' ? { mode } : {});
+        const base = fakeResult(mode === 'single' ? { mode, vault: null } : {});
         const checks = status ? base.checks.map(c => (c.id === id ? { ...c, status } : c)) : base.checks.filter(c => c.id !== id);
         renderResult({ ...base, checks });
         assert.equal(text('verdictMark'), mark, `${mode} ${id} ${status}`);
@@ -361,36 +418,42 @@ test('the rendered banner, title and mark follow the single verdict for each req
 const FAILURE_WORDS = /disagree|does not match|malformed|does not end in|do not fund/i;
 
 test('a check that did not run is shown as not verified, never as that check failing', () => {
-  for (const id of REQUIRED_CHECKS.single) {
-    for (const [label, change] of [
-      ['unknown', checks => checks.map(c => (c.id === id ? { ...c, status: 'unknown', reason: 'unread' } : c))],
-      ['unrecognised status', checks => checks.map(c => (c.id === id ? { ...c, status: 'PASS' } : c))],
-      ['absent', checks => checks.filter(c => c.id !== id)],
-    ]) {
-      const { el, text } = page();
-      const base = fakeResult();
-      const checks = change(base.checks);
-      renderResult({ ...base, checks });
-      assert.equal(text('verdictMark'), '!', `${id} ${label}`);
-      assert.match(text('verdictTitle'), /^Not verified/, `${id} ${label}`);
-      const rows = Array.from(el('checks').querySelectorAll('.check:not(.manual)'));
-      assert.equal(rows.length, checks.length, `${id} ${label}`);
-      for (const row of rows) assert.doesNotMatch(row.textContent, FAILURE_WORDS, `${id} ${label}`);
-      const at = checks.findIndex(c => c.id === id);
-      if (at === -1) continue;
-      assert.equal(rows[at].querySelector('.m').textContent, '—', `${id} ${label}`);
-      assert.match(rows[at].querySelector('.t').textContent, /not verified$/, `${id} ${label}`);
+  for (const [mode, required] of Object.entries(REQUIRED_CHECKS)) {
+    for (const id of required) {
+      for (const [label, change] of [
+        ['unknown', checks => checks.map(c => (c.id === id ? { ...c, status: 'unknown', reason: 'unread' } : c))],
+        ['unrecognised status', checks => checks.map(c => (c.id === id ? { ...c, status: 'PASS' } : c))],
+        ['absent', checks => checks.filter(c => c.id !== id)],
+      ]) {
+        const { el, text } = page();
+        const base = fakeResult(mode === 'single' ? { mode, vault: null } : {});
+        const checks = change(base.checks);
+        renderResult({ ...base, checks });
+        assert.equal(text('verdictMark'), '!', `${mode} ${id} ${label}`);
+        assert.match(text('verdictTitle'), /^Not verified/, `${mode} ${id} ${label}`);
+        const rows = Array.from(el('checks').querySelectorAll('.check:not(.manual)'));
+        assert.equal(rows.length, checks.length, `${mode} ${id} ${label}`);
+        for (const row of rows) assert.doesNotMatch(row.textContent, FAILURE_WORDS, `${mode} ${id} ${label}`);
+        const at = checks.findIndex(c => c.id === id);
+        if (at === -1) continue;
+        assert.equal(rows[at].querySelector('.m').textContent, '—', `${mode} ${id} ${label}`);
+        assert.match(rows[at].querySelector('.t').textContent, /not verified$/, `${mode} ${id} ${label}`);
+      }
     }
   }
 });
 
-test('no computed address or script reaches the page unless a decoded wallet value was compared; the other key order never does', () => {
+test('no computed address or script reaches the page unless a decoded wallet value was compared; the derived vault and the other order never do', () => {
   const base = fakeResult();
+  const own = vaultScripts(base.unlockBytes);
+  const derivedVault = [own.p2wsh, own.p2shP2wsh, own.p2shBare, outputScriptToAddress(own.p2wsh, 'bcrt')];
   const altBytes = hexToBytes(`5121${KEY2}21${KEY1}52ae`);
-  const otherOrder = outputScriptToAddress(
-    p2wshScript(buildLockScript({ stxAddress: STX, unlockHeight: 4690, unlockBytes: altBytes, earlyUnlockBytes: EARLY })),
-    'bcrt'
-  );
+  const alt = vaultScripts(altBytes);
+  const otherOrder = [
+    alt.p2wsh,
+    outputScriptToAddress(alt.p2wsh, 'bcrt'),
+    outputScriptToAddress(p2wshScript(buildLockScript({ stxAddress: STX, unlockHeight: 4690, unlockBytes: altBytes, earlyUnlockBytes: EARLY })), 'bcrt'),
+  ];
   const strangerScript = `0020${'cd'.repeat(32)}`;
   const computed = [base.address, base.sdkScript, base.contractScript, strangerScript, outputScriptToAddress(strangerScript, 'bcrt')];
 
@@ -404,6 +467,17 @@ test('no computed address or script reaches the page unless a decoded wallet val
     mismatch: { match: false, reason: 'mismatch', display: 'bcrt1qsupplied' },
     match: { match: true, reason: 'match', display: base.address },
   };
+  const vaults = {
+    none: null,
+    missing: { status: 'unknown', reason: 'missing', display: null },
+    unreadable: { status: 'unknown', reason: 'unreadable', display: null },
+    'witness-script': { status: 'unknown', reason: 'witness-script', display: null },
+    mismatch: { status: 'fail', reason: 'mismatch', display: 'bcrt1qtheirs' },
+    'not-p2wsh': { status: 'fail', reason: 'not-p2wsh', display: 'bcrt1qtheirs' },
+    'wrong-network': { status: 'fail', reason: 'wrong-network', display: 'bc1qtheirs' },
+    'other-order': { status: 'fail', reason: 'other-order', display: otherOrder[1] },
+    match: { status: 'pass', reason: 'match', display: VAULT_ADDRESS },
+  };
   const variants = {
     agree: {},
     disagree: { agree: false, contractScript: strangerScript },
@@ -412,32 +486,35 @@ test('no computed address or script reaches the page unless a decoded wallet val
   const { doc } = page();
   let states = 0;
   for (const [cName, comparison] of Object.entries(comparisons)) {
-    for (const [xName, extra] of Object.entries(variants)) {
-      const label = `comparison ${cName}, ${xName}`;
-      const result = fakeResult({ comparison, ...extra });
-      renderResult(result);
-      states += 1;
-      const text = doc.body.textContent;
-      const allowed = ['match', 'mismatch', 'wrong-network'].includes(comparison?.reason) && Boolean(comparison?.display);
-      for (const value of computed) {
-        if (!allowed) assert.ok(!text.includes(value), `${label}: ${value} shown`);
+    for (const [vName, vault] of Object.entries(vaults)) {
+      for (const [xName, extra] of Object.entries(variants)) {
+        const label = `comparison ${cName}, vault ${vName}, ${xName}`;
+        const result = fakeResult({ comparison, vault, altLabel: 'in the order you entered', ...extra });
+        renderResult(result);
+        states += 1;
+        const text = doc.body.textContent;
+        const allowed = ['match', 'mismatch', 'wrong-network'].includes(comparison?.reason) && Boolean(comparison?.display);
+        for (const value of computed) {
+          if (!allowed) assert.ok(!text.includes(value), `${label}: ${value} shown`);
+        }
+        if (allowed) assert.equal(doc.getElementById('addrText').textContent, result.address, label);
+        assert.equal(doc.querySelector('[data-copy="addrText"]')?.hidden ?? !allowed, !allowed, `${label}: copy button`);
+        for (const value of derivedVault) assert.ok(!text.includes(value), `${label}: derived vault ${value}`);
+        for (const value of otherOrder.slice(vName === 'other-order' ? 2 : 0)) assert.ok(!text.includes(value), `${label}: other order ${value}`);
       }
-      if (allowed) assert.equal(doc.getElementById('addrText').textContent, result.address, label);
-      assert.equal(doc.querySelector('[data-copy="addrText"]')?.hidden ?? !allowed, !allowed, `${label}: copy button`);
-      assert.ok(!text.includes(otherOrder), `${label}: other order ${otherOrder}`);
     }
   }
-  assert.equal(states, 8 * 2);
+  assert.equal(states, 8 * 9 * 2);
 });
 
 test('every check is required: a result where any one is unread is not ✓, in either mode', () => {
   const pinned = {
     single: ['script', 'expected', 'tail'],
-    multi: ['script', 'expected', 'tail'],
+    multi: ['script', 'vault', 'expected', 'tail'],
   };
   for (const [mode, ids] of Object.entries(pinned)) {
     assert.deepEqual([...REQUIRED_CHECKS[mode]].sort(), [...ids].sort(), mode);
-    const base = fakeResult({ mode });
+    const base = fakeResult({ mode, ...(mode === 'single' ? { vault: null } : {}) });
     assert.deepEqual(base.checks.map(c => c.id).sort(), [...ids].sort(), `${mode}: deriveChecks emits each pinned check`);
     for (const id of ids) {
       const checks = base.checks.map(c => (c.id === id ? { ...c, status: 'unknown', reason: 'unread' } : { ...c, status: 'pass' }));
@@ -445,7 +522,7 @@ test('every check is required: a result where any one is unread is not ✓, in e
       assert.equal(computeVerdict({ mode, checks: checks.filter(c => c.id !== id) }).state, 'unverified', `${mode} without ${id}`);
     }
   }
-  for (const [field, value] of [['agree', null], ['comparison', null], ['tail', null]]) {
+  for (const [field, value] of [['agree', null], ['comparison', null], ['tail', null], ['vault', null]]) {
     assert.notEqual(computeVerdict(fakeResult({ [field]: value })).state, 'match', field);
   }
 });

@@ -3,7 +3,7 @@ import type { StacksNetwork } from '@stacks/network';
 
 import type { InvalidTargetReason } from './address.ts';
 import type { Tail } from './script-view.ts';
-import type { Check } from './verdict.ts';
+import type { Check, CheckStatus } from './verdict.ts';
 
 export type NetworkName = 'private-1' | 'mainnet';
 
@@ -25,6 +25,24 @@ export interface ErrorLike {
 
 export type Settled<T> = { ok: true; value: T } | { ok: false; error: unknown };
 
+export type VaultReason =
+  | 'match'
+  | 'match-p2sh'
+  | 'match-p2sh-legacy'
+  | 'wrong-network'
+  | 'other-order'
+  | 'mismatch'
+  | 'not-p2wsh'
+  | 'missing'
+  | 'witness-script'
+  | InvalidTargetReason;
+
+export interface VaultCheck {
+  status: CheckStatus;
+  reason: VaultReason;
+  display: string | null;
+}
+
 export interface Comparison {
   match: boolean;
   reason: 'match' | 'mismatch' | 'wrong-network' | InvalidTargetReason;
@@ -37,7 +55,10 @@ export interface VerifyInput {
   bondIndex: number;
   stxAddress: string;
   unlockBytes: Uint8Array;
+  altUnlockBytes?: Uint8Array | null;
+  altLabel?: string;
   ambiguousKeysConfirmed?: boolean;
+  vaultAddress?: string | null;
   expected?: string | null;
   heightOverride?: number;
 }
@@ -57,6 +78,8 @@ export interface VerifyFacts {
   contractScript: string;
   agree: boolean;
   address: string;
+  altLabel: string;
+  vault: VaultCheck | null;
   comparison: Comparison | null;
   notes: string[];
   bondIndex: number;
