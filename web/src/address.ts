@@ -1,5 +1,6 @@
 import { bech32, bech32m, createBase58check } from '@scure/base';
-import { bytesToHex } from '@stacks/common';
+import { bytesToHex, hexToBytes } from '@stacks/common';
+import { ripemd160 } from '@noble/hashes/legacy.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 
 export type BitcoinNetwork = 'mainnet' | 'test';
@@ -49,6 +50,8 @@ const SCRIPT_TEMPLATES = [
   { kind: 'p2sh', re: /^a914[0-9a-f]{40}87$/ },
   { kind: 'p2pkh', re: /^76a914[0-9a-f]{40}88ac$/ },
 ];
+
+const hash160 = (bytes: Uint8Array) => ripemd160(sha256(bytes));
 
 const pushData = (bytes: Uint8Array) => `${bytes.length.toString(16).padStart(2, '0')}${bytesToHex(bytes)}`;
 
@@ -112,6 +115,13 @@ export function readScriptTarget(input: unknown): ScriptTarget {
 
 export function p2wshScript(witnessScript: Uint8Array): string {
   return `0020${bytesToHex(sha256(witnessScript))}`;
+}
+
+export const p2shOf = (scriptHex: string) => `a914${bytesToHex(hash160(hexToBytes(scriptHex)))}87`;
+
+export function vaultScripts(witnessScript: Uint8Array) {
+  const p2wsh = p2wshScript(witnessScript);
+  return { p2wsh, p2shP2wsh: p2shOf(p2wsh), p2shBare: p2shOf(bytesToHex(witnessScript)) };
 }
 
 export function targetNetworkMismatch(target: ScriptTarget, hrp: string): boolean {

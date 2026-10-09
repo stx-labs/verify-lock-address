@@ -98,6 +98,23 @@ test('annotations name the keys by whose they are', () => {
   assert.match(staker[2].cmt, /your key #2/);
   assert.match(staker[0].cmt, /threshold — 1 signature required/);
   assert.match(staker[4].cmt, /m of n/);
+  assert.match(staker[3].cmt, /^2 keys in the set$/);
+});
+
+test('an n-of-n tail labels its counts by position, not by value', () => {
+  const tokens = annotate(disassemble(hexToBytes(`5221${KEY1}21${KEY2}52ae`)), 'staker', { threshold: 2 });
+  assert.equal(tokens[0].cmt, 'threshold — 2 signatures required');
+  assert.equal(tokens[3].cmt, '2 keys in the set');
+
+  const one = annotate(disassemble(hexToBytes(`5121${KEY1}51ae`)), 'staker', { threshold: 1 });
+  assert.equal(one[0].cmt, 'threshold — 1 signature required');
+  assert.equal(one[2].cmt, '1 key in the set');
+
+  const keys = Array.from({ length: 17 }, () => KEY1);
+  const big = annotate(disassemble(buildMultisigUnlockScript(keys, 17)), 'staker', { threshold: 17 });
+  assert.equal(big[0].cmt, 'threshold — 17 signatures required');
+  assert.equal(big[18].cmt, '17 keys in the set');
+  assert.equal(big[19].cmt, 'final authorisation — m of n');
 });
 
 test('P2WSH address derivation is HRP-driven', () => {
@@ -131,12 +148,14 @@ test('bond 106 on private-1 reproduces the documented address', async t => {
   assert.equal(result.agree, true);
   assert.equal(result.address, ADDRESS);
   assert.deepEqual(result.comparison, { match: true, reason: 'match', display: ADDRESS });
+  assert.deepEqual(result.vault, { status: 'unknown', reason: 'missing', display: null });
   assert.deepEqual(result.checks, [
     { id: 'script', status: 'pass', reason: 'agree' },
+    { id: 'vault', status: 'unknown', reason: 'missing' },
     { id: 'expected', status: 'pass', reason: 'match' },
     { id: 'tail', status: 'pass', reason: 'ok' },
   ]);
-  assert.deepEqual(computeVerdict(result), { state: 'match', check: null });
+  assert.deepEqual(computeVerdict(result), { state: 'unverified', check: { id: 'vault', status: 'unknown', reason: 'missing' } });
   assert.equal(result.tail.label, '1-of-2');
   assert.equal(p2wshScript(result.lockScript), OUTPUT);
 
@@ -149,7 +168,7 @@ test('bond 106 on private-1 reproduces the documented address', async t => {
   assert.equal(bytesToHex(result.lockScript.slice(headLen + early.length + 2)), UNLOCK_HEX);
 });
 
-test('buildStakerUnlockBytes covers all three input shapes', async () => {
+test('buildStakerUnlockBytes covers both input shapes, and refuses any other mode', async () => {
   const { buildStakerUnlockBytes } = await import('../web/src/lock.ts');
 
   const single = buildStakerUnlockBytes({ mode: 'single', pubkey: KEY1 });
@@ -158,37 +177,19 @@ test('buildStakerUnlockBytes covers all three input shapes', async () => {
 
   const multi = buildStakerUnlockBytes({ mode: 'multi', keys: [KEY1, KEY2], threshold: '1', sorted: false });
   assert.equal(bytesToHex(multi.unlockBytes), UNLOCK_HEX);
-  assert.equal(multi.altLabel, 'BIP-67 sorted');
+  assert.equal(multi.altLabel, 'in BIP-67 sorted order');
+  assert.equal(
+    buildStakerUnlockBytes({ mode: 'multi', keys: [KEY1, KEY2], threshold: '1', sorted: true }).altLabel,
+    'in the order you entered'
+  );
 
-  // Sorted and unsorted differ here only if the entered order is not already sorted.
   const reversed = buildStakerUnlockBytes({ mode: 'multi', keys: [KEY2, KEY1], threshold: '1', sorted: true });
   assert.equal(bytesToHex(reversed.unlockBytes), UNLOCK_HEX, 'sorted mode normalises the order');
   assert.equal(bytesToHex(reversed.altUnlockBytes), `5121${KEY2}21${KEY1}52ae`);
 
-  const raw = buildStakerUnlockBytes({ mode: 'raw', rawHex: `0x${UNLOCK_HEX.toUpperCase()}` });
-  assert.equal(bytesToHex(raw.unlockBytes), UNLOCK_HEX, '0x prefix and case are tolerated');
-});
-
-test('raw staker-unlock-bytes are screened for private keys and confirm ambiguous keys like the other modes', async () => {
-  const { buildStakerUnlockBytes } = await import('../web/src/lock.ts');
-  const { AMBIGUOUS_KEY_ERROR, PRIVATE_KEY_ERROR } = await import('../web/src/secrets.ts');
-  const { AMBIGUOUS_PUBKEY, PRIVATE_KEYS } = await import('./helpers/secrets.mjs');
-
-  for (const [kind, key] of Object.entries(PRIVATE_KEYS)) {
-    assert.throws(() => buildStakerUnlockBytes({ mode: 'raw', rawHex: key }), e => e.message === PRIVATE_KEY_ERROR, kind);
+  for (const mode of ['raw', undefined, 'multisig']) {
+    assert.throws(() => buildStakerUnlockBytes({ mode, rawHex: UNLOCK_HEX }), /Choose single key or multisig/, String(mode));
   }
-
-  const rawHex = bytesToHex(buildUnlockScript(AMBIGUOUS_PUBKEY));
-  assert.throws(() => buildStakerUnlockBytes({ mode: 'raw', rawHex }), e => e.message === AMBIGUOUS_KEY_ERROR);
-  for (const provenance of [{ confirmAmbiguous: true }, { trustedKeys: [`0x${AMBIGUOUS_PUBKEY.toUpperCase()}`] }]) {
-    const built = buildStakerUnlockBytes({ mode: 'raw', rawHex, ...provenance });
-    assert.equal(bytesToHex(built.unlockBytes), rawHex);
-    assert.equal(built.ambiguousKeysConfirmed, true);
-  }
-  assert.equal(buildStakerUnlockBytes({ mode: 'raw', rawHex: UNLOCK_HEX }).ambiguousKeysConfirmed, false);
-
-  assert.throws(() => buildStakerUnlockBytes({ mode: 'raw', rawHex: AMBIGUOUS_PUBKEY }), e => e.message === AMBIGUOUS_KEY_ERROR, 'bare 33-byte value');
-  assert.equal(buildStakerUnlockBytes({ mode: 'raw', rawHex: AMBIGUOUS_PUBKEY, confirmAmbiguous: true }).ambiguousKeysConfirmed, true);
 });
 
 test('keys are normalised before they are checked and compared: every 0x prefix, any case', async () => {
@@ -199,6 +200,9 @@ test('keys are normalised before they are checked and compared: every 0x prefix,
   }
   for (const twin of [`0x0x${KEY1}`, KEY1.toUpperCase(), `0X${KEY1}`]) {
     assert.throws(() => buildStakerUnlockBytes({ mode: 'multi', keys: [KEY1, twin], threshold: '2' }), /appears twice/, twin);
+  }
+  for (const threshold of ['0x1', '1e0', '+1', '1.0', '01x', '']) {
+    assert.throws(() => buildStakerUnlockBytes({ mode: 'multi', keys: [KEY1, KEY2], threshold }), /Threshold must be between 1 and 2/, threshold);
   }
   assert.equal(buildStakerUnlockBytes({ mode: 'multi', keys: [KEY1, KEY2], threshold: 2 }).unlockBytes.at(-2), 0x52);
 });
@@ -211,9 +215,6 @@ test('buildStakerUnlockBytes rejects the inputs that would cost money', async ()
   assert.throws(() => buildStakerUnlockBytes({ mode: 'multi', keys: [] }), /Add the public keys/);
   assert.throws(() => buildStakerUnlockBytes({ mode: 'multi', keys: [KEY1, KEY1], threshold: '1' }), /appears twice/);
   assert.throws(() => buildStakerUnlockBytes({ mode: 'multi', keys: [KEY1], threshold: '2' }), /between 1 and 1/);
-  assert.throws(() => buildStakerUnlockBytes({ mode: 'raw', rawHex: '' }), /Paste the staker-unlock-bytes/);
-  assert.throws(() => buildStakerUnlockBytes({ mode: 'raw', rawHex: 'abc' }), /even-length hex/);
-  assert.throws(() => buildStakerUnlockBytes({ mode: 'raw', rawHex: 'zzzz' }), /even-length hex/);
 
   // An off-curve x-coordinate still yields a fundable address whose OP_CHECKSIG
   // can never be satisfied, so the SDK's curve check has to stay in the path.
@@ -309,4 +310,20 @@ test('pickWalletAddresses survives junk and older reply shapes', async () => {
   ]);
   assert.equal(legacy.stxAddress, STX);
   assert.equal(legacy.btcPublicKey, KEY1);
+});
+
+test('a bad multisig key is named by the row the user sees, blank rows included', async () => {
+  const { buildStakerUnlockBytes } = await import('../web/src/lock.ts');
+  assert.throws(
+    () => buildStakerUnlockBytes({ mode: 'multi', keys: ['', KEY1, 'deadbeef'], threshold: 1, sorted: true }),
+    e => e.message === 'Key #3 is not a 33-byte compressed public key.'
+  );
+  assert.throws(
+    () => buildStakerUnlockBytes({ mode: 'multi', keys: [KEY1, '', KEY2, `02${'00'.repeat(32)}`], threshold: 1, sorted: true }),
+    /^Error: Key #4 is not a valid public key/
+  );
+  assert.throws(
+    () => buildStakerUnlockBytes({ mode: 'multi', keys: ['', '  ', 'zz'], threshold: 1, sorted: true }),
+    e => e.message === 'Key #3 is not a 33-byte compressed public key.'
+  );
 });

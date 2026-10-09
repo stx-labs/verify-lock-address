@@ -1,6 +1,6 @@
-import type { Mode, VerifyFacts, VerifyResult } from './types.ts';
+import type { Mode, VaultReason, VerifyFacts, VerifyResult } from './types.ts';
 
-export const CHECK_ORDER = ['script', 'expected', 'tail'] as const;
+export const CHECK_ORDER = ['script', 'vault', 'expected', 'tail'] as const;
 
 export type CheckId = (typeof CHECK_ORDER)[number];
 
@@ -21,7 +21,7 @@ export interface Verdict {
 
 export const REQUIRED_CHECKS: Record<Mode, CheckId[]> = {
   single: ['script', 'tail', 'expected'],
-  multi: ['script', 'tail', 'expected'],
+  multi: ['script', 'tail', 'vault', 'expected'],
 };
 
 const check = (id: CheckId, status: CheckStatus, reason: string): Check => ({ id, status, reason });
@@ -47,6 +47,19 @@ function tailCheck(r: VerifyFacts): Check {
   return check('tail', 'pass', 'ok');
 }
 
+export const VAULT_REASONS: Record<CheckStatus, VaultReason[]> = {
+  pass: ['match', 'match-p2sh', 'match-p2sh-legacy'],
+  fail: ['wrong-network', 'other-order', 'mismatch', 'not-p2wsh'],
+  unknown: ['missing', 'mixed-case', 'unreadable', 'witness-script'],
+};
+
+function vaultCheck(r: VerifyFacts): Check {
+  const v = r.vault;
+  if (v && Object.hasOwn(VAULT_REASONS, v.status) && VAULT_REASONS[v.status].includes(v.reason)) return check('vault', v.status, v.reason);
+  if (r.vault === null || r.vault === undefined) return check('vault', 'unknown', 'missing');
+  return check('vault', 'unknown', 'unrecognised');
+}
+
 export const COMPARED_REASONS = ['match', 'mismatch', 'wrong-network'];
 
 export function revealsComputed(r: Pick<VerifyFacts, 'comparison'> | null | undefined): boolean {
@@ -59,7 +72,10 @@ export function checkMode(r: { mode?: unknown }): Mode | null {
 }
 
 export function deriveChecks(r: VerifyFacts): Check[] {
-  return [scriptCheck(r), expectedCheck(r), tailCheck(r)];
+  const checks = [scriptCheck(r)];
+  if (checkMode(r) === 'multi') checks.push(vaultCheck(r));
+  checks.push(expectedCheck(r), tailCheck(r));
+  return checks;
 }
 
 const rank = (id: CheckId) => {

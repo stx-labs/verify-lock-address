@@ -3,8 +3,13 @@ import assert from 'node:assert/strict';
 import test, { afterEach } from 'node:test';
 
 import { buildUnlockScript } from '@stacks/bitcoin-staking';
+import { bytesToHex, hexToBytes } from '@stacks/common';
 import { Cl } from '@stacks/transactions';
+import { createBase58check } from '@scure/base';
+import { sha256 } from '@noble/hashes/sha2.js';
 
+import { p2shOf, p2wshScript, vaultScripts } from '../web/src/address.ts';
+import { parseMultisigDescriptor } from '../web/src/descriptor.ts';
 import {
   buildStakerUnlockBytes,
   NETWORKS,
@@ -20,6 +25,7 @@ import {
   BOND_2_EARLY,
   BOND_2_HEIGHT,
   BOND_2_TUPLE,
+  DESCRIPTOR,
   LOCK_ADDRESS,
   LOCK_OUTPUT,
   NOT_LISTED,
@@ -29,18 +35,17 @@ import {
 } from './helpers/stub-api.mjs';
 import { deadlineError, isTransient, reachable, skipOnTransient, throwIfTransientGap } from './helpers/live.mjs';
 
-const VAULT_KEYS = [
-  '030347be500a8b2707a00e7576c0c527a247cddc6e8363ee51147b8e43b590baa9',
-  '0347b913aed4ee088b6fea3e9537836a1c8f1b72111cf010af5589d93f3a433f02',
-];
-
-const vaultInput = () => ({ mode: 'multi', ...buildStakerUnlockBytes({ mode: 'multi', keys: VAULT_KEYS, threshold: 2, sorted: true }) });
+const vaultInput = () => {
+  const p = parseMultisigDescriptor(DESCRIPTOR);
+  return { mode: 'multi', ...buildStakerUnlockBytes({ mode: 'multi', keys: p.keys, threshold: p.threshold, sorted: p.sorted }) };
+};
 
 const passing = (overrides = {}) => ({
   network: 'mainnet',
   bondIndex: 2,
   stxAddress: ALLOWLISTED,
   ...vaultInput(),
+  vaultAddress: VAULT,
   expected: LOCK_ADDRESS,
   ...overrides,
 });
@@ -69,6 +74,7 @@ test('bond 2: a staker with the vault keys and the matching address is a match',
   assert.equal(r.earlyUnlockBytes, BOND_2_EARLY);
   assert.equal(r.contractScript, LOCK_OUTPUT);
   assert.equal(r.address, LOCK_ADDRESS);
+  assert.equal(r.vault.status, 'pass');
   assert.equal(r.tail.label, '2-of-2');
   assert.equal(r.mode, 'multi');
   assert.ok(r.checks.every(c => c.status === 'pass'), JSON.stringify(r.checks));
@@ -78,7 +84,7 @@ test('bond 2: a staker with the vault keys and the matching address is a match',
 test('verify refuses a private key in any text it is handed, before any request and without echoing it', async () => {
   for (const [kind, key] of Object.entries(PRIVATE_KEYS)) {
     for (const [where, text] of Object.entries(embeddings(key))) {
-      for (const field of ['expected', 'stxAddress']) {
+      for (const field of ['vaultAddress', 'expected', 'stxAddress', 'altLabel']) {
         const calls = stubApi();
         await assert.rejects(verify(passing({ [field]: text })), e => {
           assert.equal(e.message, privateKeyError(INPUT_LABELS[field]), `${kind} ${where} in ${field}`);
@@ -155,6 +161,61 @@ test('an override replaces the derived height and is described as an override', 
 
   for (const heightOverride of [0, -1, 1.5, 2 ** 60, NaN]) {
     await assert.rejects(verify(passing({ heightOverride })), /override must be a whole number/);
+  }
+});
+
+test('a vault that the keys do not reproduce is reported against the verification', async () => {
+  stubApi();
+  const other = buildStakerUnlockBytes({ mode: 'multi', keys: parseMultisigDescriptor(DESCRIPTOR).keys, threshold: 1, sorted: true });
+  const r = await verify(passing({ ...other }));
+  assert.equal(r.vault.status, 'fail');
+  assert.equal(r.vault.reason, 'mismatch');
+  assert.equal('derived' in r.vault, false, 'the vault these keys make is not carried, so it cannot be printed');
+  assert.notEqual(bytesToHex(other.unlockBytes), bytesToHex(vaultInput().unlockBytes));
+  assert.equal(computeVerdict(r).state, 'fail');
+});
+
+test('the vault input is decoded: bech32 either case, P2SH-wrapped, script hex, or the reason it cannot be', async () => {
+  const { unlockBytes } = vaultInput();
+  const { p2wsh: p2wshHex, p2shP2wsh: p2shHex, p2shBare } = vaultScripts(unlockBytes);
+  assert.equal(p2wshHex, p2wshScript(unlockBytes));
+  assert.match(p2shHex, /^a914[0-9a-f]{40}87$/);
+  const legacyAddress = createBase58check(sha256).encode(Uint8Array.from([0x05, ...hexToBytes(p2shBare.slice(4, -2))]));
+  const witnessHex = bytesToHex(unlockBytes);
+  const cases = [
+    [VAULT, 'pass', 'match'],
+    [VAULT.toUpperCase(), 'pass', 'match'],
+    [p2wshHex, 'pass', 'match'],
+    [`0x${p2wshHex.toUpperCase()}`, 'pass', 'match'],
+    ['37Rf1c6VoRDVNBXVuiiqLZdLehvksYa4Ye', 'pass', 'match-p2sh'],
+    [p2shHex, 'pass', 'match-p2sh'],
+    [legacyAddress, 'pass', 'match-p2sh-legacy'],
+    [p2shBare, 'pass', 'match-p2sh-legacy'],
+    [witnessHex, 'unknown', 'witness-script'],
+    [`0x${witnessHex.toUpperCase()}`, 'unknown', 'witness-script'],
+    [`0014${'11'.repeat(20)}`, 'fail', 'not-p2wsh'],
+    ['e9873d79c6d87dc0fb6a5778633389f4453213303da61f20bd67fc233aa332', 'unknown', 'unreadable'],
+    ['37Rf1c6VoRDVNBXVuiiqLZdLehvksYa4Yf', 'unknown', 'unreadable'],
+    ['xpub6BuKrNqTrGfsy8VAAdUW2KCxbHywuSKjg7hZuAXERXDv7GfuxUgUWdVRKNsgujcwdjEHCjaXWouPKi1m5gMgdWX8JpRcyMkrSxPe4Da3Lx8', 'unknown', 'unreadable'],
+    ['tb1q2t8hc5ssw5evn22w9ptvuhuux8k39nqn735hqz9yhqr4ttltl5nq757ymr', 'fail', 'wrong-network'],
+    ['2N3oefVeg6stiTb5Kh3ozCSkaqmx91FDbsm', 'fail', 'wrong-network'],
+    ['bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', 'fail', 'not-p2wsh'],
+    ['bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0', 'fail', 'not-p2wsh'],
+    ['1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2', 'fail', 'not-p2wsh'],
+    [LOCK_ADDRESS, 'fail', 'mismatch'],
+    [`bc1Q${VAULT.slice(4)}`, 'unknown', 'mixed-case'],
+    ['not an address', 'unknown', 'unreadable'],
+    ['', 'unknown', 'missing'],
+    [null, 'unknown', 'missing'],
+  ];
+  for (const [vaultAddress, status, reason] of cases) {
+    stubApi();
+    const r = await verify(passing({ vaultAddress }));
+    assert.equal(r.vault.status, status, String(vaultAddress));
+    assert.equal(r.vault.reason, reason, String(vaultAddress));
+    assert.equal(checkOf(r, 'vault').status, status, String(vaultAddress));
+    assert.equal(computeVerdict(r).state, { pass: 'match', fail: 'fail', unknown: 'unverified' }[status], String(vaultAddress));
+    if (status === 'unknown') assert.equal(r.vault.display, null, `${vaultAddress}: never echoed`);
   }
 });
 
@@ -311,6 +372,7 @@ test('expected input is shown back only once decoded into a standard script temp
     if (reason === 'unreadable') assert.equal(r.comparison.display, null, expected);
     else assert.equal(r.comparison.display, expected);
   }
+  assert.equal(p2shOf('00'), 'a9149f7fd096d37ed2c0e3f7f0cfc924beef4ffceb6887');
 });
 
 test('the live-test guard skips transient failures only', async () => {
@@ -442,6 +504,7 @@ test('bond 2 on mainnet reproduces the pinned multisig lock address', async t =>
   assert.equal(r.contractScript, LOCK_OUTPUT);
   assert.equal(r.address, LOCK_ADDRESS);
   assert.equal(r.comparison.match, true);
+  assert.equal(r.vault.status, 'pass');
   assert.deepEqual(r.notes, []);
 });
 
@@ -523,9 +586,17 @@ test('a cancelled verification aborts its requests and rejects at once', async (
   await assert.rejects(verify(passing(), () => {}, { signal: already.signal }), /cancelled/);
 });
 
+test('when a wrong key fails both the vault and the address comparison, the headline names the vault', async () => {
+  globalThis.fetch = makeStub().fetch;
+  const other = buildStakerUnlockBytes({ mode: 'multi', keys: parseMultisigDescriptor(DESCRIPTOR).keys, threshold: 1, sorted: true });
+  const r = await verify(passing({ ...other }));
+  assert.equal(r.checks.find(c => c.id === 'expected').status, 'fail');
+  assert.equal(computeVerdict(r).check.id, 'vault');
+});
+
 test('verify refuses a key shaped like a Stacks private key unless the caller says it was confirmed', async () => {
   const AMBIGUOUS = '022f01e5e15cca351daff3843fb70f3c2f0a1bdd05e5af888a67784ef3e10a2a01';
-  const single = { mode: 'single', unlockBytes: buildUnlockScript(AMBIGUOUS), altUnlockBytes: null };
+  const single = { mode: 'single', unlockBytes: buildUnlockScript(AMBIGUOUS), altUnlockBytes: null, vaultAddress: null };
   const stub = makeStub();
   globalThis.fetch = stub.fetch;
   await assert.rejects(verify(passing(single)), e => e.message === AMBIGUOUS_KEY_ERROR);
