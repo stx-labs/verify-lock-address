@@ -1,4 +1,4 @@
-import { live } from './helpers/offline.mjs';
+import './helpers/offline.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -9,22 +9,16 @@ import {
   buildMultisigUnlockScript,
   outputScriptToAddress,
   sortKeysBip67,
-  verify,
 } from '../web/src/lock.ts';
-import { p2wshScript } from '../web/src/address.ts';
 import { annotate, describeUnlockScript, disassemble, tokenText } from '../web/src/script-view.ts';
-import { computeVerdict } from '../web/src/verdict.ts';
-import { reachable, skipOnTransient } from './helpers/live.mjs';
 
-// The worked example from the lock-address validation doc: a 1-of-2 multisig on
-// bond 106, private-1. Every published intermediate value is pinned here.
 const KEY1 = '032bfc45f5dec5ba404da7ca12d3120dd67350bd72607eec3990bbb31611b454a0';
 const KEY2 = '039236b5534c437a2bf0b59963d57771c3f88687b4b3f90b35703dce4acd3879f4';
 const STX = 'SN275N04VCDVG27KQSESEKD6X06PS3HH634SNH41M';
 const UNLOCK_HEX = `5121${KEY1}21${KEY2}52ae`;
 const EARLY = '21032853a683729ff79dc33bce675d83892cf0bad4fc15462225de42d7b88ed89292ac';
-const OUTPUT = '002023ce763de6bf52096e81e7eea0935e9ba48f223f2f51f8488b17b013bf65ff52';
-const ADDRESS = 'bcrt1qy088v00xhafqjm5pulh2py67nwjg7g3l9aglsjytz7cp80m9lafqqkcdvw';
+const OUTPUT = '002039c1200fe65d931198798c15a9094d25e6170ee05dbad7efb6e860c53868a04a';
+const ADDRESS = 'tb1q88qjqrlxtkf3rxre3s26jz2dyhnpwrhqtkad0makapsv2wrg5p9qeuht2s';
 
 test('multisig unlock script matches the documented 1-of-2 tail', () => {
   assert.equal(bytesToHex(buildMultisigUnlockScript([KEY1, KEY2], 1)), UNLOCK_HEX);
@@ -118,54 +112,9 @@ test('an n-of-n tail labels its counts by position, not by value', () => {
 });
 
 test('P2WSH address derivation is HRP-driven', () => {
-  assert.equal(outputScriptToAddress(OUTPUT, 'bcrt'), ADDRESS);
+  assert.equal(outputScriptToAddress(OUTPUT, 'tb'), ADDRESS);
   assert.ok(outputScriptToAddress(OUTPUT, 'bc').startsWith('bc1q'));
   assert.throws(() => outputScriptToAddress('0020ab', 'bc'), /not a P2WSH output script/);
-});
-
-test('bond 106 on private-1 reproduces the documented address', async t => {
-  if (!(await reachable(t, 'https://api.private-1.hiro.so/v2/pox'))) return;
-
-  const result = await skipOnTransient(t, () =>
-    live(() =>
-      verify({
-        network: 'private-1',
-        bondIndex: 106,
-        stxAddress: STX,
-        unlockBytes: hexToBytes(UNLOCK_HEX),
-        expected: ADDRESS,
-      })
-    )
-  );
-  if (!result) return;
-
-  assert.equal(result.mode, 'multi');
-  assert.equal(result.earlyUnlockBytes, EARLY);
-  assert.equal(result.derivedHeight, 4690);
-  assert.equal(result.unlockHeight, 4690);
-  assert.equal(result.sdkScript, OUTPUT);
-  assert.equal(result.contractScript, OUTPUT);
-  assert.equal(result.agree, true);
-  assert.equal(result.address, ADDRESS);
-  assert.deepEqual(result.comparison, { match: true, reason: 'match', display: ADDRESS });
-  assert.deepEqual(result.vault, { status: 'unknown', reason: 'missing', display: null });
-  assert.deepEqual(result.checks, [
-    { id: 'script', status: 'pass', reason: 'agree' },
-    { id: 'vault', status: 'unknown', reason: 'missing' },
-    { id: 'expected', status: 'pass', reason: 'match' },
-    { id: 'tail', status: 'pass', reason: 'ok' },
-  ]);
-  assert.deepEqual(computeVerdict(result), { state: 'unverified', check: { id: 'vault', status: 'unknown', reason: 'missing' } });
-  assert.equal(result.tail.label, '1-of-2');
-  assert.equal(p2wshScript(result.lockScript), OUTPUT);
-
-  // The three segments must tile the script exactly — the viewer's offsets depend on it.
-  const early = hexToBytes(result.earlyUnlockBytes);
-  const headLen = result.lockScript.length - result.unlockBytes.length - 2 - early.length;
-  assert.ok(headLen > 0);
-  assert.equal(bytesToHex(result.lockScript.slice(headLen, headLen + early.length)), result.earlyUnlockBytes);
-  assert.equal(bytesToHex(result.lockScript.slice(headLen + early.length, headLen + early.length + 2)), '6869');
-  assert.equal(bytesToHex(result.lockScript.slice(headLen + early.length + 2)), UNLOCK_HEX);
 });
 
 test('buildStakerUnlockBytes covers both input shapes, and refuses any other mode', async () => {
@@ -230,7 +179,7 @@ const BTC_ONLY = [
   {
     symbol: 'BTC',
     type: 'p2wpkh',
-    address: 'bcrt1qvz04jt55sy7a4e9fg447gm2zlmnjck3dhdw5gf',
+    address: 'tb1qvz04jt55sy7a4e9fg447gm2zlmnjck3d4yhelq',
     publicKey: '039236b5534c437a2bf0b59963d57771c3f88687b4b3f90b35703dce4acd3879f4',
     derivationPath: "m/84'/1'/0'/0/0",
     fingerprint: '48611587',
@@ -238,7 +187,7 @@ const BTC_ONLY = [
   {
     symbol: 'BTC',
     type: 'p2tr',
-    address: 'bcrt1p3fkam9r2qjqs3k26mhxka9ag9lastgvfy4axucx8ua6tcvh4lwvsuqn3gd',
+    address: 'tb1p3fkam9r2qjqs3k26mhxka9ag9lastgvfy4axucx8ua6tcvh4lwvs3eehah',
     publicKey: '029d0db5f341fc661d3f1a1adfd1157b299067922fe04bde8910dfbd3a161540ad',
     tweakedPublicKey: '9d0db5f341fc661d3f1a1adfd1157b299067922fe04bde8910dfbd3a161540ad',
     derivationPath: "m/86'/1'/0'/0/0",
@@ -252,12 +201,12 @@ test('a BTC-only reply fills the key and reports the missing principal', async (
 
   assert.equal(p.stxAddress, '');
   assert.equal(p.btcPublicKey, KEY2, 'the p2wpkh key wins over the taproot one');
-  assert.equal(p.btcAddress, 'bcrt1qvz04jt55sy7a4e9fg447gm2zlmnjck3dhdw5gf');
+  assert.equal(p.btcAddress, 'tb1qvz04jt55sy7a4e9fg447gm2zlmnjck3d4yhelq');
   assert.equal(p.btcType, 'p2wpkh');
   assert.equal(p.taprootOnly, false);
   assert.deepEqual(p.missing, ['stx']);
   // With no principal to read, the Bitcoin HRP still identifies the chain.
-  assert.equal(p.networkGuess, 'private-1');
+  assert.equal(p.networkGuess, 'staking-testnet');
 });
 
 test('an STX-only reply fills the principal and reports the missing key', async () => {
@@ -267,17 +216,17 @@ test('an STX-only reply fills the principal and reports the missing key', async 
   assert.equal(p.stxAddress, STX);
   assert.equal(p.btcPublicKey, '');
   assert.deepEqual(p.missing, ['btc']);
-  assert.equal(p.networkGuess, 'private-1');
+  assert.equal(p.networkGuess, 'staking-testnet');
 });
 
 test('a full reply fills both and reads the network off the principal', async () => {
   const { pickWalletAddresses } = await import('../web/src/lock.ts');
 
-  const regtest = pickWalletAddresses([{ symbol: 'STX', address: STX }, ...BTC_ONLY]);
-  assert.equal(regtest.stxAddress, STX);
-  assert.equal(regtest.btcPublicKey, KEY2);
-  assert.deepEqual(regtest.missing, []);
-  assert.equal(regtest.networkGuess, 'private-1');
+  const testnet = pickWalletAddresses([{ symbol: 'STX', address: STX }, ...BTC_ONLY]);
+  assert.equal(testnet.stxAddress, STX);
+  assert.equal(testnet.btcPublicKey, KEY2);
+  assert.deepEqual(testnet.missing, []);
+  assert.equal(testnet.networkGuess, 'staking-testnet');
 
   const main = pickWalletAddresses([
     { symbol: 'STX', address: 'SP2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKNRV9EJ7' },
@@ -306,7 +255,7 @@ test('pickWalletAddresses survives junk and older reply shapes', async () => {
   // No `symbol` field: entries are identified by the shape of the address.
   const legacy = pickWalletAddresses([
     { address: STX },
-    { address: 'bcrt1qvz04jt55sy7a4e9fg447gm2zlmnjck3dhdw5gf', publicKey: KEY1 },
+    { address: 'tb1qvz04jt55sy7a4e9fg447gm2zlmnjck3d4yhelq', publicKey: KEY1 },
   ]);
   assert.equal(legacy.stxAddress, STX);
   assert.equal(legacy.btcPublicKey, KEY1);

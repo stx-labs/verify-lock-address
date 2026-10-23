@@ -5,7 +5,7 @@ import type { InvalidTargetReason } from './address.ts';
 import type { Tail } from './script-view.ts';
 import type { Check, CheckStatus } from './verdict.ts';
 
-export type NetworkName = 'private-1' | 'mainnet';
+export type NetworkName = 'staking-testnet' | 'mainnet';
 
 export type Mode = 'single' | 'multi';
 
