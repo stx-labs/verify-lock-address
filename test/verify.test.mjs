@@ -412,7 +412,7 @@ test('the live-test guard skips transient failures only', async () => {
     new Error('Error fetching pox info. Response 404: Not Found.'),
     new Error('bond 2 does not exist on mainnet'),
     new assert.AssertionError({ message: 'wrong address' }),
-    new Error('… If the API is unreachable, check that https://api.private-1.hiro.so is up and that the bond exists on that network.'),
+    new Error('… If the API is unreachable, check that https://api.staking-testnet.hiro.so is up and that the bond exists on that network.'),
     new Error('socket hang up ECONNRESET in a message but no code'),
     Object.assign(new Error('get-protocol-bond did not answer within 0 s'), { name: 'TimeoutError' }),
     deadlineError(45_000),
@@ -522,7 +522,7 @@ test("the page's own read timeout makes a live test fail, not skip", async () =>
 test('the stub refuses and records a request to the wrong host or contract for its network', async () => {
   const stub = makeStub({ network: 'mainnet' });
   for (const url of [
-    'https://api.private-1.hiro.so/v2/pox',
+    'https://api.staking-testnet.hiro.so/v2/pox',
     'https://api.testnet.hiro.so/v2/pox',
     'https://api.hiro.so/v2/contracts/call-read/ST000000000000000000002AMW42H/pox-5/get-protocol-bond',
     'https://api.hiro.so/v2/contracts/call-read/SP000000000000000000002Q6VF78/pox-4/get-protocol-bond',
@@ -531,8 +531,8 @@ test('the stub refuses and records a request to the wrong host or contract for i
   }
   assert.equal(takeViolations().length, 4);
 
-  globalThis.fetch = makeStub({ network: 'private-1' }).fetch;
-  await assert.rejects(verify(passing()), /stub:/, 'a mainnet verification against a private-1 stub is caught');
+  globalThis.fetch = makeStub({ network: 'staking-testnet' }).fetch;
+  await assert.rejects(verify(passing()), /stub:/, 'a mainnet verification against a staking-testnet stub is caught');
   assert.ok(takeViolations().length > 0);
 });
 

@@ -113,7 +113,7 @@ function walletNotes(picked: WalletAddresses): Child[] {
       'Leather returned no Stacks address, so ',
       h('strong', null, 'enter the staker principal yourself'),
       ": the Stacks principal the staking app will register with. That is normally the account's single-key " +
-        'SP… (mainnet) / ST… (private-1) address — a Bitcoin multisig vault has no Stacks principal of its own.',
+        'SP… (mainnet) / ST… (BTC Staking Testnet) address — a Bitcoin multisig vault has no Stacks principal of its own.',
     ]);
   }
   if (picked.missing.includes('btc')) {

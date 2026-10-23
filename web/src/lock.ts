@@ -64,10 +64,10 @@ export interface WalletAddresses {
 }
 
 export const NETWORKS: Record<NetworkName, Network> = {
-  'private-1': {
-    label: 'private-1',
-    api: 'https://api.private-1.hiro.so',
-    hrp: 'bcrt',
+  'staking-testnet': {
+    label: 'BTC Staking Testnet',
+    api: 'https://api.staking-testnet.hiro.so',
+    hrp: 'tb',
     boot: 'ST000000000000000000002AMW42H',
     stacks: STACKS_TESTNET,
     badge: 'badge-net',
@@ -507,7 +507,7 @@ export function buildStakerUnlockBytes(form: UnlockForm): StakerUnlock {
   };
 }
 
-const HRP_NETWORK: Record<string, NetworkName | undefined> = { bc: 'mainnet', bcrt: 'private-1' };
+const HRP_NETWORK: Record<string, NetworkName | undefined> = { bc: 'mainnet', tb: 'staking-testnet' };
 
 export function pickWalletAddresses(list: unknown): WalletAddresses {
   const entries: WalletEntry[] = Array.isArray(list) ? list.filter(a => a && typeof a === 'object') : [];
@@ -517,7 +517,7 @@ export function pickWalletAddresses(list: unknown): WalletAddresses {
     entries.find(a => /^S[PTMN][0-9A-Z]{37,}$/.test((a.address || '').split('.')[0]));
 
   const btcEntries = entries.filter(
-    a => a.symbol === 'BTC' || /^(bc|tb|bcrt)1/.test(a.address || '')
+    a => a.symbol === 'BTC' || /^(bc|tb)1/.test(a.address || '')
   );
   const btc =
     btcEntries.find(a => a.type === 'p2wpkh' && a.publicKey) ??
@@ -534,8 +534,8 @@ export function pickWalletAddresses(list: unknown): WalletAddresses {
 
   const btcAddress = btc?.address ?? vault?.address;
   let networkGuess: NetworkName | null = null;
-  if (stx?.address) networkGuess = /^S[PM]/.test(stx.address) ? 'mainnet' : 'private-1';
-  else if (btcAddress) networkGuess = HRP_NETWORK[(btcAddress.match(/^(bcrt|bc|tb)1/) ?? [])[1]] ?? null;
+  if (stx?.address) networkGuess = /^S[PM]/.test(stx.address) ? 'mainnet' : 'staking-testnet';
+  else if (btcAddress) networkGuess = HRP_NETWORK[(btcAddress.match(/^(bc|tb)1/) ?? [])[1]] ?? null;
 
   return {
     vault,
