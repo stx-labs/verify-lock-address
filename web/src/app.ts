@@ -29,7 +29,7 @@ const $ = ((id: string) => document.getElementById(id)) as {
   (id: 'network'): HTMLSelectElement;
   (id: 'descriptor'): HTMLTextAreaElement;
   (id: FieldId | 'sortKeys' | 'confirmPubkeys'): HTMLInputElement;
-  (id: 'verifyBtn' | 'connectBtn'): HTMLButtonElement;
+  (id: 'verifyBtn' | 'connectBtn' | 'pickBtcBtn'): HTMLButtonElement;
   (id: string): HTMLElement;
 };
 
@@ -89,14 +89,18 @@ function resetConfirmation(): void {
   $('confirmPubkeysBox').hidden = true;
 }
 
-async function connectLeather(): Promise<WalletAddresses> {
+async function requestAddresses(): Promise<WalletAddresses> {
   const provider = window.LeatherProvider;
   if (!provider) {
     throw new Error('Leather was not detected in this browser. Install or unlock the extension and reload.');
   }
 
   const res = await provider.request('getAddresses', { allowPolicyAccounts: true });
-  const picked = pickWalletAddresses(res?.result?.addresses ?? []);
+  return pickWalletAddresses(res?.result?.addresses ?? []);
+}
+
+async function connectLeather(): Promise<WalletAddresses> {
+  const picked = await requestAddresses();
 
   if (picked.missing.length === 2) {
     throw new Error('Leather returned neither a Stacks address nor a Bitcoin public key. Unlock the extension and try again, or fill the fields in by hand.');
@@ -116,13 +120,6 @@ function walletNotes(picked: WalletAddresses): Child[] {
         'SP… (mainnet) / ST… (BTC Staking Testnet) address — a Bitcoin multisig vault has no Stacks principal of its own.',
     ]);
   }
-  if (picked.missing.includes('btc')) {
-    notes.push([
-      'Leather returned no Bitcoin public key, so ',
-      h('strong', null, 'paste the compressed key yourself'),
-      ' — the 33-byte key whose signature will unlock the timelocked output.',
-    ]);
-  }
   if (picked.taprootOnly) {
     notes.push(
       'The only Bitcoin key returned is a taproot (p2tr) one — the untweaked internal key. The lockup ' +
@@ -131,6 +128,66 @@ function walletNotes(picked: WalletAddresses): Child[] {
     );
   }
   return notes;
+}
+
+const PICK_LABEL = 'Select the Bitcoin wallet you plan to use';
+const REPICK_LABEL = 'Select a different Bitcoin wallet';
+const WAITING_LABEL = 'Waiting for Leather…';
+
+let pickRequest = 0;
+
+function resetBitcoinPick(): void {
+  pickRequest += 1;
+  $('pickBtcBtn').disabled = false;
+  $('pickBtcBtn').textContent = PICK_LABEL;
+}
+
+const isMultisigPrincipal = (principal: string) => /^S[MN]/.test(principal);
+
+function principalNetwork(): NetworkName {
+  const principal = $('stxAddress').value.trim();
+  if (isStacksPrincipal(principal)) return /^S[PM]/.test(principal) ? 'mainnet' : 'staking-testnet';
+  return $('network').value as NetworkName;
+}
+
+function offerBitcoinPick(principal: string): void {
+  fill(
+    $('btcPickText'),
+    h('strong', null, 'Leather returned no Bitcoin public key for this Stacks account.'),
+    ' ',
+    isMultisigPrincipal(principal)
+      ? 'A Stacks multisig has no Bitcoin key of its own, so staking with one takes two wallets: this Stacks ' +
+          'account, which registers the bond, and the Bitcoin wallet whose key unlocks the BTC once the timelock ends.'
+      : 'Staking takes a Stacks account, which registers the bond, and a Bitcoin wallet, whose key unlocks the BTC ' +
+          'once the timelock ends.',
+    ' Leather will ask again: in its window, click the account under "With account" and choose the one that holds ' +
+      'that Bitcoin key. The Stacks address above stays as it is. Leather keeps the account you choose as its active ' +
+      'one, so switch back to this Stacks account before you sign anything for it. You can also ',
+    h('strong', null, 'paste the compressed key yourself'),
+    ' — the 33-byte key whose signature will unlock the timelocked output.'
+  );
+  $('btcPick').hidden = false;
+}
+
+function confirmBitcoinPick(w: WalletAddresses): void {
+  fill(
+    $('btcPickText'),
+    h('strong', null, w.vault ? 'The multisig vault below is from the Bitcoin wallet you selected in Leather.' : 'The Bitcoin public key below is from the Bitcoin wallet you selected in Leather.'),
+    ' The Stacks address is still the one from your first connection. Check both before you fund anything; ' +
+      'to use another Bitcoin account, select again and choose it in Leather.'
+  );
+  $('pickBtcBtn').textContent = REPICK_LABEL;
+}
+
+function bitcoinNetworkError(w: WalletAddresses, network: NetworkName): Error | null {
+  const net = NETWORKS[network];
+  const foreign = [w.btcAddress, w.vault?.address ?? ''].find(a => a && !a.toLowerCase().startsWith(`${net.hrp}1`));
+  if (!foreign) return null;
+  const prefix = (foreign.toLowerCase().match(/^(bcrt|bc|tb)1/) ?? [])[0];
+  return new Error(
+    `Leather returned a Bitcoin account for another network (${prefix ? `${prefix}…` : 'an address this page does not recognise'}), ` +
+      `but the Stacks address is a ${net.label} one. Switch Leather to ${net.label} and select the Bitcoin wallet again.`
+  );
 }
 
 const multi: MultiState = { source: 'manual', network: null, networkKeys: [], fromWallet: false };
@@ -330,6 +387,34 @@ function dropWalletValues(): void {
   $('vaultInfo').hidden = true;
   multi.source = 'manual';
   multi.fromWallet = false;
+}
+
+function fillBitcoin(w: WalletAddresses, notes: Child[]): void {
+  if (w.btcPublicKey) {
+    trustKeys([w.btcPublicKey]);
+    $('pubkey').value = w.btcPublicKey;
+    $('pubkey').classList.add('prefilled');
+  }
+
+  if (w.vault) {
+    try {
+      const parsed = parseMultisigDescriptor(w.vault.descriptor);
+      fillMulti(parsed, 'wallet', w.vault.address);
+      showVaultInfo(parsed, w.vault.address);
+    } catch (e) {
+      clearMulti();
+      $('vaultAddress').value = w.vault.address;
+      $('vaultAddress').classList.add('prefilled');
+      setMode('multi');
+      notes.push(
+        `Leather returned a multisig account, but its descriptor could not be read: ${messageOf(e)} ` +
+          "Enter the vault's public keys and threshold by hand."
+      );
+    }
+    multi.fromWallet = true;
+  } else if (w.btcPublicKey) {
+    setMode('single');
+  }
 }
 
 function readForm(): { input: VerifyInput; warnings: string[] } {
@@ -532,32 +617,12 @@ function main(): void {
         $('stxAddress').value = w.stxAddress;
         $('stxAddress').classList.add('prefilled');
       }
-      if (w.btcPublicKey) {
-        trustKeys([w.btcPublicKey]);
-        $('pubkey').value = w.btcPublicKey;
-        $('pubkey').classList.add('prefilled');
-      }
-
       const notes = walletNotes(w);
-      if (w.vault) {
-        try {
-          const parsed = parseMultisigDescriptor(w.vault.descriptor);
-          fillMulti(parsed, 'wallet', w.vault.address);
-          showVaultInfo(parsed, w.vault.address);
-        } catch (e) {
-          clearMulti();
-          $('vaultAddress').value = w.vault.address;
-          $('vaultAddress').classList.add('prefilled');
-          setMode('multi');
-          notes.push(
-            `Leather returned a multisig account, but its descriptor could not be read: ${messageOf(e)} ` +
-              "Enter the vault's public keys and threshold by hand."
-          );
-        }
-        multi.fromWallet = true;
-      } else if (w.btcPublicKey) {
-        setMode('single');
-      }
+      fillBitcoin(w, notes);
+
+      resetBitcoinPick();
+      if (w.stxAddress && w.missing.includes('btc')) offerBitcoinPick(w.stxAddress);
+      else $('btcPick').hidden = true;
 
       $('walletBadge').hidden = false;
       const label = w.stxAddress || w.btcAddress || w.vault?.address || w.btcPublicKey;
@@ -581,6 +646,55 @@ function main(): void {
     }
   });
 
+  $('pickBtcBtn').addEventListener('click', async () => {
+    const btn = $('pickBtcBtn');
+    const label = btn.textContent;
+    const session = walletSession;
+    pickRequest += 1;
+    const request = pickRequest;
+    btn.disabled = true;
+    btn.textContent = WAITING_LABEL;
+    try {
+      const w = await requestAddresses();
+      if (session !== walletSession) return;
+      if (!w.btcPublicKey && !w.vault) {
+        throw new Error(
+          'Leather returned no Bitcoin public key for the selected account either. Select again and choose the account ' +
+            'that holds your Bitcoin key in Leather, or paste the key yourself.'
+        );
+      }
+      const network = principalNetwork();
+      const mismatch = bitcoinNetworkError(w, network);
+      if (mismatch) throw mismatch;
+
+      walletSession += 1;
+      trustedKeys.clear();
+      resetConfirmation();
+      invalidate();
+      dropWalletVault();
+
+      const notes = walletNotes({ ...w, missing: [] });
+      fillBitcoin(w, notes);
+      confirmBitcoinPick(w);
+
+      $('formErr').hidden = true;
+      fill($('walletNote'), paragraphs(notes));
+      $('walletNote').hidden = notes.length === 0;
+
+      if ($('network').value !== network) {
+        $('network').value = network;
+        setNetworkBadge();
+      }
+    } catch (e) {
+      if (session === walletSession) showError(e);
+    } finally {
+      if (request === pickRequest) {
+        btn.disabled = false;
+        if (btn.textContent === WAITING_LABEL) btn.textContent = label;
+      }
+    }
+  });
+
   $('disconnectBtn').addEventListener('click', () => {
     walletSession += 1;
     trustedKeys.clear();
@@ -590,6 +704,8 @@ function main(): void {
     $('connectBtn').hidden = false;
     $('disconnectBtn').hidden = true;
     $('walletNote').hidden = true;
+    $('btcPick').hidden = true;
+    resetBitcoinPick();
     dropWalletValues();
     $('vaultInfo').hidden = true;
   });
