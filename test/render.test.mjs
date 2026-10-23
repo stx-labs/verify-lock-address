@@ -53,15 +53,15 @@ function page() {
   return { doc, window: dom.window, text, el: id => doc.getElementById(id) };
 }
 
-const VAULT_ADDRESS = 'bcrt1qvaultvaultvault';
+const VAULT_ADDRESS = 'tb1qvaultvaultvault';
 
 function fakeResult(overrides = {}) {
   const unlockBytes = hexToBytes(UNLOCK_HEX);
   const lockScript = buildLockScript({ stxAddress: STX, unlockHeight: 4690, unlockBytes, earlyUnlockBytes: EARLY });
   const script = p2wshScript(lockScript);
-  const address = outputScriptToAddress(script, 'bcrt');
+  const address = outputScriptToAddress(script, 'tb');
   const result = {
-    net: NETWORKS['private-1'],
+    net: NETWORKS['staking-testnet'],
     mode: 'multi',
     tail: describeUnlockScript(unlockBytes),
     unlockBytes,
@@ -122,14 +122,14 @@ test('a passing result renders the address, the script and the checks', () => {
 
 test('a mismatch renders as a failure, not a pass', () => {
   const { el, text } = page();
-  renderResult(fakeResult({ comparison: { match: false, reason: 'mismatch', display: 'bcrt1qwrong' } }));
+  renderResult(fakeResult({ comparison: { match: false, reason: 'mismatch', display: 'tb1qwrong' } }));
 
   assert.equal(text('verdictMark'), '✕');
   assert.equal(el('verdict').className, 'verdict err');
   assert.match(text('verdictTitle'), /does not match/);
   assert.match(text('verdictSub'), /Do not fund/);
   assert.match(text('checks'), /does NOT match/);
-  assert.match(text('checks'), /Supplied: bcrt1qwrong/);
+  assert.match(text('checks'), /Supplied: tb1qwrong/);
 });
 
 test('SDK/contract disagreement is reported as a failure', () => {
@@ -160,14 +160,14 @@ test('the other key order is named when it would match the vault, and its addres
     unlockHeight: 4690,
     unlockBytes: hexToBytes(`5121${KEY2}21${KEY1}52ae`),
     earlyUnlockBytes: EARLY,
-  })), 'bcrt');
+  })), 'tb');
   for (const vault of [
     null,
     { status: 'unknown', reason: 'missing', display: null },
     { status: 'fail', reason: 'other-order', display: VAULT_ADDRESS },
     { status: 'pass', reason: 'match', display: VAULT_ADDRESS },
   ]) {
-    for (const comparison of [null, { match: false, reason: 'mismatch', display: 'bcrt1qsupplied' }]) {
+    for (const comparison of [null, { match: false, reason: 'mismatch', display: 'tb1qsupplied' }]) {
       renderResult(fakeResult({ vault, comparison, altLabel: 'in the order you entered' }));
       assert.ok(!doc.body.textContent.includes(otherOrder), `${vault?.reason} ${comparison?.reason}`);
       assert.doesNotMatch(text('verdictSub'), /With the keys|the address would be/);
@@ -223,7 +223,7 @@ test('a single-sig result renders its own vocabulary', () => {
       lockScript,
       sdkScript: script,
       contractScript: script,
-      address: outputScriptToAddress(script, 'bcrt'),
+      address: outputScriptToAddress(script, 'tb'),
       comparison: null,
     })
   );
@@ -237,32 +237,32 @@ test('a single-sig result renders its own vocabulary', () => {
 test('mainnet renders bc1 addresses', () => {
   const result = fakeResult();
   assert.ok(outputScriptToAddress(result.contractScript, NETWORKS.mainnet.hrp).startsWith('bc1q'));
-  assert.ok(outputScriptToAddress(result.contractScript, NETWORKS['private-1'].hrp).startsWith('bcrt1q'));
+  assert.ok(outputScriptToAddress(result.contractScript, NETWORKS['staking-testnet'].hrp).startsWith('tb1q'));
 });
 
 test('a multisig with no vault address is not verified, asks for the wallet’s address, and never prints the derived one', () => {
   const { el, text, doc } = page();
-  renderResult(fakeResult({ vault: { status: 'unknown', reason: 'missing', display: null, derived: 'bcrt1qderivedvault' } }));
+  renderResult(fakeResult({ vault: { status: 'unknown', reason: 'missing', display: null, derived: 'tb1qderivedvault' } }));
   assert.equal(text('verdictMark'), '!');
   assert.equal(el('verdict').className, 'verdict warn');
   assert.equal(text('verdictTitle'), 'Not verified — copy your vault address from your wallet');
   assert.match(text('verdictSub'), /Copy your multisig vault address from your wallet/);
   assert.match(text('checks'), /Vault address not supplied — this page cannot tie the keys to your wallet/);
-  assert.doesNotMatch(doc.body.textContent, /bcrt1qderivedvault/, 'the derived vault is never offered for pasting back');
+  assert.doesNotMatch(doc.body.textContent, /tb1qderivedvault/, 'the derived vault is never offered for pasting back');
 
   for (const reason of ['unreadable', 'mixed-case', 'witness-script']) {
-    renderResult(fakeResult({ vault: { status: 'unknown', reason, display: null, derived: 'bcrt1qderivedvault' } }));
+    renderResult(fakeResult({ vault: { status: 'unknown', reason, display: null, derived: 'tb1qderivedvault' } }));
     assert.equal(text('verdictTitle'), 'Not verified — copy your vault address from your wallet', reason);
-    assert.doesNotMatch(doc.body.textContent, /bcrt1qderivedvault/, reason);
+    assert.doesNotMatch(doc.body.textContent, /tb1qderivedvault/, reason);
   }
 
   for (const reason of ['mismatch', 'wrong-network', 'not-p2wsh', 'other-order']) {
-    renderResult(fakeResult({ vault: { status: 'fail', reason, display: 'bcrt1qtheirs', derived: 'bcrt1qderivedvault' } }));
-    assert.match(text('checks'), /Vault bcrt1qtheirs\./, reason);
-    assert.doesNotMatch(doc.body.textContent, /bcrt1qderivedvault/, `${reason}: not even as the differing side`);
+    renderResult(fakeResult({ vault: { status: 'fail', reason, display: 'tb1qtheirs', derived: 'tb1qderivedvault' } }));
+    assert.match(text('checks'), /Vault tb1qtheirs\./, reason);
+    assert.doesNotMatch(doc.body.textContent, /tb1qderivedvault/, `${reason}: not even as the differing side`);
   }
 
-  renderResult(fakeResult({ vault: { status: 'fail', reason: 'brand-new-reason', display: 'bcrt1qtheirs', derived: 'x' } }));
+  renderResult(fakeResult({ vault: { status: 'fail', reason: 'brand-new-reason', display: 'tb1qtheirs', derived: 'x' } }));
   assert.equal(text('verdictMark'), '!');
   assert.match(text('checks'), /does not recognise/);
   assert.doesNotMatch(text('checks'), /not supplied/);
@@ -286,7 +286,7 @@ test('with no expected address the lock address and output script are withheld',
 
   renderResult(fakeResult({ comparison: { match: false, reason: 'unreadable', display: null } }));
   assert.doesNotMatch(text('checks'), new RegExp(`computed ${result.address}`), 'junk input does not unlock the address');
-  renderResult(fakeResult({ comparison: { match: false, reason: 'mismatch', display: 'bcrt1qtheirs' } }));
+  renderResult(fakeResult({ comparison: { match: false, reason: 'mismatch', display: 'tb1qtheirs' } }));
   assert.match(text('checks'), new RegExp(`This page computed ${result.address}`));
 });
 
@@ -309,10 +309,10 @@ const SCENARIOS = {
   mismatch: () =>
     fakeResult({
       notes: ['a note'],
-      vault: { status: 'fail', reason: 'mismatch', display: 'bcrt1qvault' },
-      comparison: { match: false, reason: 'mismatch', display: 'bcrt1qsupplied' },
+      vault: { status: 'fail', reason: 'mismatch', display: 'tb1qvault' },
+      comparison: { match: false, reason: 'mismatch', display: 'tb1qsupplied' },
     }),
-  'wrong vault network': () => fakeResult({ vault: { status: 'fail', reason: 'wrong-network', display: 'bcrt1qvault' } }),
+  'wrong vault network': () => fakeResult({ vault: { status: 'fail', reason: 'wrong-network', display: 'tb1qvault' } }),
   overridden: () => fakeResult({ heightOverridden: true }),
   match: () => fakeResult({ notes: ['a note'] }),
 };
@@ -446,25 +446,25 @@ test('a check that did not run is shown as not verified, never as that check fai
 test('no computed address or script reaches the page unless a decoded wallet value was compared; the derived vault and the other order never do', () => {
   const base = fakeResult();
   const own = vaultScripts(base.unlockBytes);
-  const derivedVault = [own.p2wsh, own.p2shP2wsh, own.p2shBare, outputScriptToAddress(own.p2wsh, 'bcrt')];
+  const derivedVault = [own.p2wsh, own.p2shP2wsh, own.p2shBare, outputScriptToAddress(own.p2wsh, 'tb')];
   const altBytes = hexToBytes(`5121${KEY2}21${KEY1}52ae`);
   const alt = vaultScripts(altBytes);
   const otherOrder = [
     alt.p2wsh,
-    outputScriptToAddress(alt.p2wsh, 'bcrt'),
-    outputScriptToAddress(p2wshScript(buildLockScript({ stxAddress: STX, unlockHeight: 4690, unlockBytes: altBytes, earlyUnlockBytes: EARLY })), 'bcrt'),
+    outputScriptToAddress(alt.p2wsh, 'tb'),
+    outputScriptToAddress(p2wshScript(buildLockScript({ stxAddress: STX, unlockHeight: 4690, unlockBytes: altBytes, earlyUnlockBytes: EARLY })), 'tb'),
   ];
   const strangerScript = `0020${'cd'.repeat(32)}`;
-  const computed = [base.address, base.sdkScript, base.contractScript, strangerScript, outputScriptToAddress(strangerScript, 'bcrt')];
+  const computed = [base.address, base.sdkScript, base.contractScript, strangerScript, outputScriptToAddress(strangerScript, 'tb')];
 
   const comparisons = {
     none: null,
     unreadable: { match: false, reason: 'unreadable', display: null },
     'mixed-case': { match: false, reason: 'mixed-case', display: null },
-    'unknown reason with a display': { match: false, reason: 'brand-new', display: 'bcrt1qsupplied' },
+    'unknown reason with a display': { match: false, reason: 'brand-new', display: 'tb1qsupplied' },
     'mismatch without a display': { match: false, reason: 'mismatch', display: null },
     'wrong-network': { match: false, reason: 'wrong-network', display: 'bc1qsupplied' },
-    mismatch: { match: false, reason: 'mismatch', display: 'bcrt1qsupplied' },
+    mismatch: { match: false, reason: 'mismatch', display: 'tb1qsupplied' },
     match: { match: true, reason: 'match', display: base.address },
   };
   const vaults = {
@@ -472,8 +472,8 @@ test('no computed address or script reaches the page unless a decoded wallet val
     missing: { status: 'unknown', reason: 'missing', display: null },
     unreadable: { status: 'unknown', reason: 'unreadable', display: null },
     'witness-script': { status: 'unknown', reason: 'witness-script', display: null },
-    mismatch: { status: 'fail', reason: 'mismatch', display: 'bcrt1qtheirs' },
-    'not-p2wsh': { status: 'fail', reason: 'not-p2wsh', display: 'bcrt1qtheirs' },
+    mismatch: { status: 'fail', reason: 'mismatch', display: 'tb1qtheirs' },
+    'not-p2wsh': { status: 'fail', reason: 'not-p2wsh', display: 'tb1qtheirs' },
     'wrong-network': { status: 'fail', reason: 'wrong-network', display: 'bc1qtheirs' },
     'other-order': { status: 'fail', reason: 'other-order', display: otherOrder[1] },
     match: { status: 'pass', reason: 'match', display: VAULT_ADDRESS },

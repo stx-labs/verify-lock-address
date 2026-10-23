@@ -50,7 +50,7 @@ export const stakeOver = (firstCycle, numCycles) => Cl.some(stakeTuple(firstCycl
 
 export const STUB_NETWORKS = {
   mainnet: { api: 'https://api.hiro.so', boot: 'SP000000000000000000002Q6VF78' },
-  'private-1': { api: 'https://api.private-1.hiro.so', boot: 'ST000000000000000000002AMW42H' },
+  'staking-testnet': { api: 'https://api.staking-testnet.hiro.so', boot: 'ST000000000000000000002AMW42H' },
 };
 
 const VIOLATIONS = [];

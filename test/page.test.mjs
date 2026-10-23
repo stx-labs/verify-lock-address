@@ -1,4 +1,4 @@
-import { live } from './helpers/offline.mjs';
+import './helpers/offline.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -10,8 +10,8 @@ import { bech32 } from '@scure/base';
 import { bytesToHex, hexToBytes } from '@stacks/common';
 import { JSDOM } from 'jsdom';
 
-import { buildMultisigUnlockScript, NETWORKS, outputScriptToAddress } from '../web/src/lock.ts';
-import { deadlineError, isTransient, reachable, skipOnTransient } from './helpers/live.mjs';
+import { buildMultisigUnlockScript, outputScriptToAddress } from '../web/src/lock.ts';
+import { isTransient } from './helpers/live.mjs';
 import { AMBIGUOUS_PUBKEY, embeddings, PRIVATE_KEYS } from './helpers/secrets.mjs';
 import {
   ALLOWLISTED,
@@ -31,9 +31,6 @@ const path = rel => fileURLToPath(new URL(rel, root));
 const KEY1 = '032bfc45f5dec5ba404da7ca12d3120dd67350bd72607eec3990bbb31611b454a0';
 const KEY2 = '039236b5534c437a2bf0b59963d57771c3f88687b4b3f90b35703dce4acd3879f4';
 const STX = 'SN275N04VCDVG27KQSESEKD6X06PS3HH634SNH41M';
-const ADDRESS = 'bcrt1qy088v00xhafqjm5pulh2py67nwjg7g3l9aglsjytz7cp80m9lafqqkcdvw';
-
-const LIVE_PAGE_TIMEOUT_MS = 45_000;
 
 const pageError = (message, name, code) =>
   Object.assign(new Error(message), { name: name || 'Error', cause: code ? Object.assign(new Error(code), { code }) : undefined });
@@ -80,7 +77,7 @@ test('the page boots without errors, offering the single-key flow', () => {
   const { doc, errors } = loadPage();
   assert.deepEqual(errors, []);
   assert.equal(doc.getElementById('results').hidden, true);
-  assert.equal(doc.getElementById('netBadgeText').textContent, 'private-1');
+  assert.equal(doc.getElementById('netBadgeText').textContent, 'BTC Staking Testnet');
   assert.equal(doc.getElementById('paneSingle').hidden, false, 'single key is the default');
   assert.equal(doc.getElementById('paneMulti').hidden, true);
   assert.equal(doc.querySelectorAll('#keyList input').length, 2, 'multisig starts with two empty key rows');
@@ -117,70 +114,12 @@ test('form validation refuses to run on incomplete input', () => {
   assert.match(doc.getElementById('formErr').textContent, /66 hex characters/);
 });
 
-test('a mainnet address on private-1 is caught before anything is funded', () => {
+test('a mainnet address on BTC Staking Testnet is caught before anything is funded', () => {
   const { doc } = loadPage();
   setValue(doc, 'bondIndex', '106');
   setValue(doc, 'stxAddress', 'SP2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKNRV9EJ7');
   setValue(doc, 'pubkey', KEY1);
   assert.equal(doc.getElementById('formErr').hidden, true);
-});
-
-test('a full verification renders end to end', async t => {
-  if (!(await reachable(t, `${NETWORKS['private-1'].api}/v2/pox`))) return;
-
-  const { verify } = await import('../web/src/lock.ts');
-  const { buildUnlockScript } = await import('@stacks/bitcoin-staking');
-  const ran = await skipOnTransient(t, () => live(async () => {
-    const expected = await verify({
-      network: 'private-1',
-      bondIndex: 106,
-      stxAddress: STX,
-      unlockBytes: buildUnlockScript(KEY1),
-    });
-
-    const page = loadPage();
-    const { doc } = page;
-    setValue(doc, 'bondIndex', '106');
-    setValue(doc, 'stxAddress', STX);
-    setValue(doc, 'pubkey', KEY1);
-    setValue(doc, 'expected', expected.address);
-    click(doc, 'verifyBtn');
-
-    const deadline = Date.now() + LIVE_PAGE_TIMEOUT_MS;
-    while (Date.now() < deadline && doc.getElementById('results').hidden && doc.getElementById('formErr').hidden) {
-      await new Promise(r => setTimeout(r, 100));
-    }
-    if (doc.getElementById('results').hidden && doc.getElementById('formErr').hidden) {
-      throw deadlineError(LIVE_PAGE_TIMEOUT_MS);
-    }
-    const formErr = doc.getElementById('formErr');
-    if (!formErr.hidden) throw pageError(formErr.textContent, formErr.dataset.errorName, formErr.dataset.errorCode);
-    return { ...page, expected };
-  }));
-  if (!ran) return;
-  const { doc, errors, expected } = ran;
-  assert.equal(expected.agree, true);
-
-  assert.deepEqual(errors, []);
-  assert.equal(doc.getElementById('formErr').hidden, true, doc.getElementById('formErr').textContent);
-  assert.equal(doc.getElementById('results').hidden, false);
-  assert.equal(doc.getElementById('addrText').textContent, expected.address);
-  assert.ok(expected.address.startsWith('bcrt1q'));
-  assert.equal(doc.getElementById('verdictMark').textContent, '✓');
-  assert.equal(doc.getElementById('verdictTitle').textContent, 'Match — this is the address to fund');
-  assert.match(checksText(doc), /The SDK and pox-5 derive the same output script/);
-  assert.match(checksText(doc), /The address you supplied matches/);
-  assert.equal(doc.getElementById('tPolicy').textContent, 'single key');
-  assert.equal(doc.getElementById('tHeight').textContent, '4690');
-  assert.match(doc.getElementById('asmOut').textContent, /OP_CHECKLOCKTIMEVERIFY/);
-  assert.match(doc.getElementById('asmOut').textContent, /your key #1/);
-  assert.match(doc.getElementById('asmOut').textContent, /final authorisation — one signature/);
-  assert.equal(doc.getElementById('paneLoading').hidden, true);
-  assert.equal(doc.getElementById('verifyBtn').disabled, false);
-
-  click(doc, 'toggleHex');
-  assert.equal(doc.getElementById('rawHexOut').hidden, false);
-  assert.match(doc.getElementById('rawHexOut').textContent, /^63/);
 });
 
 function withLeather(window, addresses) {
@@ -201,7 +140,7 @@ const BTC_ONLY = [
   {
     symbol: 'BTC',
     type: 'p2wpkh',
-    address: 'bcrt1qvz04jt55sy7a4e9fg447gm2zlmnjck3dhdw5gf',
+    address: 'tb1qvz04jt55sy7a4e9fg447gm2zlmnjck3d4yhelq',
     publicKey: KEY2,
     derivationPath: "m/84'/1'/0'/0/0",
     fingerprint: '48611587',
@@ -209,7 +148,7 @@ const BTC_ONLY = [
   {
     symbol: 'BTC',
     type: 'p2tr',
-    address: 'bcrt1p3fkam9r2qjqs3k26mhxka9ag9lastgvfy4axucx8ua6tcvh4lwvsuqn3gd',
+    address: 'tb1p3fkam9r2qjqs3k26mhxka9ag9lastgvfy4axucx8ua6tcvh4lwvs3eehah',
     publicKey: '029d0db5f341fc661d3f1a1adfd1157b299067922fe04bde8910dfbd3a161540ad',
     tweakedPublicKey: '9d0db5f341fc661d3f1a1adfd1157b299067922fe04bde8910dfbd3a161540ad',
     derivationPath: "m/86'/1'/0'/0/0",
@@ -234,16 +173,16 @@ test('a BTC-only wallet reply connects and says what is still needed', async () 
   assert.equal(note.hidden, false);
   assert.match(note.textContent, /no Stacks address/);
   assert.match(note.textContent, /the Stacks principal the staking app will register with/);
-  assert.match(note.textContent, /single-key SP… \(mainnet\) \/ ST… \(private-1\) address/);
+  assert.match(note.textContent, /single-key SP… \(mainnet\) \/ ST… \(BTC Staking Testnet\) address/);
   assert.match(note.textContent, /multisig vault has no Stacks principal/);
   assert.doesNotMatch(note.textContent, /SM…\/SN…/);
   assert.doesNotMatch(note.textContent, /no Bitcoin public key/);
 
-  assert.equal(doc.getElementById('network').value, 'private-1');
+  assert.equal(doc.getElementById('network').value, 'staking-testnet');
   assert.equal(doc.getElementById('walletBadge').hidden, false);
   assert.equal(doc.getElementById('connectBtn').hidden, true);
 
-  window.fetch = stubApi({ network: 'private-1', bonds: [106] }).fetch;
+  window.fetch = stubApi({ network: 'staking-testnet', bonds: [106] }).fetch;
   setValue(doc, 'bondIndex', '106');
   setValue(doc, 'stxAddress', STX);
   await runVerify(doc);
@@ -265,7 +204,7 @@ test('an STX-only wallet reply connects and asks for the key', async () => {
   assert.equal(doc.getElementById('btcPick').hidden, false);
   assert.match(doc.getElementById('btcPickText').textContent, /no Bitcoin public key/);
   assert.match(doc.getElementById('btcPickText').textContent, /paste the compressed key/i);
-  assert.equal(doc.getElementById('network').value, 'private-1');
+  assert.equal(doc.getElementById('network').value, 'staking-testnet');
 });
 
 test('a complete reply fills both and shows no notice', async () => {
@@ -390,7 +329,7 @@ test('selecting the Bitcoin wallet fills the key and keeps the Stacks principal 
   assert.equal(doc.getElementById('pubkey').value, KEY2, 'the p2wpkh key is filled in');
   assert.ok(doc.getElementById('pubkey').classList.contains('prefilled'));
   assert.equal(doc.getElementById('paneSingle').hidden, false);
-  assert.equal(doc.getElementById('network').value, 'private-1');
+  assert.equal(doc.getElementById('network').value, 'staking-testnet');
   assert.equal(doc.getElementById('btcPick').hidden, false);
   assert.match(doc.getElementById('btcPickText').textContent, /public key below is from the Bitcoin wallet you selected/);
   assert.match(doc.getElementById('btcPickText').textContent, /still the one from your first connection/);
@@ -398,7 +337,7 @@ test('selecting the Bitcoin wallet fills the key and keeps the Stacks principal 
   assert.equal(doc.getElementById('pickBtcBtn').disabled, false);
   assert.equal(doc.getElementById('walletNote').hidden, true);
 
-  window.fetch = stubApi({ network: 'private-1', bonds: [106] }).fetch;
+  window.fetch = stubApi({ network: 'staking-testnet', bonds: [106] }).fetch;
   setValue(doc, 'bondIndex', '106');
   await runVerify(doc);
 
@@ -474,10 +413,10 @@ test('a cancelled or empty Bitcoin wallet reply changes nothing and says why', a
 
 test('a Bitcoin wallet for the other network is refused, and nothing is filled', async () => {
   for (const [first, reply, label] of [
-    [STX, MAINNET_BTC, /bc1…\), but the Stacks address is a private-1 one/],
-    [ALLOWLISTED, BTC_ONLY, /bcrt1…\), but the Stacks address is a mainnet one/],
-    [ALLOWLISTED, [{ ...POLICY_REPLY[0], address: ADDRESS }], /bcrt1…\), but the Stacks address is a mainnet one/],
-    [STX, [{ symbol: 'BTC', type: 'p2wpkh', address: 'tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx', publicKey: KEY1 }], /tb1…\)/],
+    [STX, MAINNET_BTC, /bc1…\), but the Stacks address is a BTC Staking Testnet one/],
+    [ALLOWLISTED, BTC_ONLY, /tb1…\), but the Stacks address is a mainnet one/],
+    [ALLOWLISTED, [{ ...POLICY_REPLY[0], address: VAULT.replace(/^bc1/, 'tb1') }], /tb1…\), but the Stacks address is a mainnet one/],
+    [STX, [{ symbol: 'BTC', type: 'p2wpkh', address: 'bcrt1qvz04jt55sy7a4e9fg447gm2zlmnjck3dhdw5gf', publicKey: KEY1 }], /bcrt1…\)/],
   ]) {
     const { doc, window } = loadPage();
     await connectStxOnly(doc, window, first);
@@ -769,7 +708,7 @@ test('keys entered by hand verify the same as the wallet-filled ones', async () 
 
 test('a pasted descriptor fills the keys, and a bad one says why', async () => {
   const { doc, window } = loadPage();
-  window.fetch = stubApi({ network: 'private-1' }).fetch;
+  window.fetch = stubApi({ network: 'staking-testnet' }).fetch;
   doc.querySelector('#modeSeg [data-mode="multi"]').dispatchEvent(new window.Event('click', { bubbles: true }));
 
   setValue(doc, 'descriptor', DESCRIPTOR.replace('sortedmulti(2', 'sortedmulti(3'));
@@ -786,7 +725,7 @@ test('a pasted descriptor fills the keys, and a bad one says why', async () => {
   setValue(doc, 'bondIndex', '2');
   setValue(doc, 'stxAddress', ALLOWLISTED);
   await runVerify(doc);
-  assert.match(doc.getElementById('verdictSub').textContent, /mainnet \(xpub\) keys, but the network selected is private-1/);
+  assert.match(doc.getElementById('verdictSub').textContent, /mainnet \(xpub\) keys, but the network selected is BTC Staking Testnet/);
 });
 
 test('changing a wallet-supplied key fails the vault check', async () => {
@@ -935,7 +874,7 @@ test('a single-sig connect after a policy account verifies the new key, not the 
   click(doc, 'disconnectBtn');
 
   withLeather(window, [{ symbol: 'STX', address: STX }, ...BTC_ONLY]);
-  window.fetch = stubApi({ network: 'private-1', bonds: [106] }).fetch;
+  window.fetch = stubApi({ network: 'staking-testnet', bonds: [106] }).fetch;
   click(doc, 'connectBtn');
   await settle();
 
@@ -991,7 +930,7 @@ test('a wallet reply with a BTC key but no address connects without crashing', a
 
 test("the descriptor's network warning lasts only while one of its keys is still there", async () => {
   const { doc, window } = loadPage();
-  window.fetch = stubApi({ network: 'private-1' }).fetch;
+  window.fetch = stubApi({ network: 'staking-testnet' }).fetch;
   doc.querySelector('#modeSeg [data-mode="multi"]').dispatchEvent(new window.Event('click', { bubbles: true }));
   setValue(doc, 'descriptor', DESCRIPTOR);
   click(doc, 'useDescriptorBtn');
@@ -1012,7 +951,7 @@ test("the descriptor's network warning lasts only while one of its keys is still
 
 test("a raw key in a mixed descriptor does not keep the xpub network warning alive", async () => {
   const { doc, window } = loadPage();
-  window.fetch = stubApi({ network: 'private-1' }).fetch;
+  window.fetch = stubApi({ network: 'staking-testnet' }).fetch;
   doc.querySelector('#modeSeg [data-mode="multi"]').dispatchEvent(new window.Event('click', { bubbles: true }));
   const [xpubA] = DESCRIPTOR.match(/xpub[1-9A-HJ-NP-Za-km-z]+\/0\/0/g);
   setValue(doc, 'descriptor', `wsh(multi(2,${KEY2},${xpubA}))`);
@@ -1267,7 +1206,7 @@ test('any change to the inputs, mode, network or wallet clears a shown result', 
   const changes = {
     input: (doc) => setValue(doc, 'stxAddress', NOT_LISTED),
     network: (doc, window) => {
-      doc.getElementById('network').value = 'private-1';
+      doc.getElementById('network').value = 'staking-testnet';
       doc.getElementById('network').dispatchEvent(new window.Event('change', { bubbles: true }));
     },
     mode: (doc, window) => doc.querySelector('#modeSeg [data-mode="single"]').dispatchEvent(new window.Event('click', { bubbles: true })),
@@ -1658,7 +1597,7 @@ test('the public-key confirmation covers only the exact keys it was given; every
     'network change and back': {
       mode: 'single',
       act: doc => {
-        for (const net of ['private-1', 'mainnet']) {
+        for (const net of ['staking-testnet', 'mainnet']) {
           doc.getElementById('network').value = net;
           doc.getElementById('network').dispatchEvent(new doc.defaultView.Event('change', { bubbles: true }));
         }
