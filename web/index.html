@@ -333,7 +333,7 @@
       white-space: nowrap;
     }
 
-    .seg button[aria-selected="true"] {
+    .seg button[aria-pressed="true"] {
       background: var(--surface-fourth);
       color: var(--text-primary);
       box-shadow: var(--elevation-sm);
@@ -798,9 +798,9 @@
 
         <div class="field wide">
           <label>Unlock policy <span class="hint">who can spend the BTC once the timelock ends</span></label>
-          <div class="seg" id="modeSeg" role="tablist" aria-label="Unlock policy">
-            <button type="button" role="tab" data-mode="single" aria-selected="true">Single key</button>
-            <button type="button" role="tab" data-mode="multi" aria-selected="false">Multisig</button>
+          <div class="seg" id="modeSeg" role="group" aria-label="Unlock policy">
+            <button type="button" data-mode="single" aria-pressed="true">Single key</button>
+            <button type="button" data-mode="multi" aria-pressed="false">Multisig</button>
           </div>
         </div>
 

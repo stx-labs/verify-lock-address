@@ -716,6 +716,33 @@ test("the descriptor's network warning lasts only while one of its keys is still
   assert.doesNotMatch(doc.getElementById('verdictSub').textContent, /xpub/, 'every descriptor key replaced by hand');
 });
 
+test("a raw key in a mixed descriptor does not keep the xpub network warning alive", async () => {
+  const { doc, window } = loadPage();
+  window.fetch = stubApi({ network: 'private-1' }).fetch;
+  doc.querySelector('#modeSeg [data-mode="multi"]').dispatchEvent(new window.Event('click', { bubbles: true }));
+  const [xpubA] = DESCRIPTOR.match(/xpub[1-9A-HJ-NP-Za-km-z]+\/0\/0/g);
+  setValue(doc, 'descriptor', `wsh(multi(2,${KEY2},${xpubA}))`);
+  click(doc, 'useDescriptorBtn');
+  setValue(doc, 'bondIndex', '2');
+  setValue(doc, 'stxAddress', ALLOWLISTED);
+
+  const derived = keyInputs(doc).find(input => input.value !== KEY2);
+  derived.value = KEY1;
+  derived.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await runVerify(doc);
+  assert.doesNotMatch(doc.getElementById('verdictSub').textContent, /xpub/, 'only the raw key remains');
+});
+
+test('key rows and their remove buttons are named by position', () => {
+  const { doc } = loadPage();
+  click(doc, 'addKeyBtn');
+  const rows = doc.querySelectorAll('#keyList .keyrow');
+  rows.forEach((row, i) => {
+    assert.equal(row.querySelector('input').getAttribute('aria-label'), `Public key #${i + 1}`);
+    assert.equal(row.querySelector('button').getAttribute('aria-label'), `Remove key #${i + 1}`);
+  });
+});
+
 test('a private key pasted into a key field is refused without being echoed', () => {
   const wif = 'KwdMAjGmerYanjeui5SHS7JkmpZvVipYvB2LJGU1ZxJwYvP98617';
   const { doc, window } = loadPage();

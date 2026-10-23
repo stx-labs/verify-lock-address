@@ -137,7 +137,7 @@ const multi: MultiState = { source: 'manual', network: null, networkKeys: [], fr
 
 function setMode(mode: Mode): void {
   for (const btn of $('modeSeg').querySelectorAll('button')) {
-    btn.setAttribute('aria-selected', String(btn.dataset.mode === mode));
+    btn.setAttribute('aria-pressed', String(btn.dataset.mode === mode));
   }
   $('paneSingle').hidden = mode !== 'single';
   $('paneMulti').hidden = mode !== 'multi';
@@ -147,13 +147,16 @@ function setMode(mode: Mode): void {
   invalidate();
 }
 
-const currentMode = () => $('modeSeg').querySelector<HTMLElement>('[aria-selected="true"]')!.dataset.mode as Mode;
+const currentMode = () => $('modeSeg').querySelector<HTMLElement>('[aria-pressed="true"]')!.dataset.mode as Mode;
 
 function renumberKeys(): void {
   const rows = $('keyList').querySelectorAll('.keyrow');
   rows.forEach((row, i) => {
     row.querySelector('.idx')!.textContent = `#${i + 1}`;
-    row.querySelector('button')!.disabled = rows.length === 1;
+    row.querySelector('input')!.setAttribute('aria-label', `Public key #${i + 1}`);
+    const remove = row.querySelector('button')!;
+    remove.setAttribute('aria-label', `Remove key #${i + 1}`);
+    remove.disabled = rows.length === 1;
   });
 }
 
@@ -169,7 +172,6 @@ function addKeyRow(value = '', prefilled = false): HTMLInputElement {
   input.spellcheck = false;
   input.autocomplete = 'off';
   input.placeholder = '02… / 03… compressed public key';
-  input.setAttribute('aria-label', 'Public key');
   input.value = value;
   if (prefilled) input.classList.add('prefilled');
 
@@ -177,7 +179,6 @@ function addKeyRow(value = '', prefilled = false): HTMLInputElement {
   remove.type = 'button';
   remove.className = 'iconbtn';
   remove.textContent = '×';
-  remove.setAttribute('aria-label', 'Remove key');
 
   row.append(idx, input, remove);
   $('keyList').append(row);
@@ -245,7 +246,7 @@ function fillMulti(parsed: ParsedDescriptor, source: MultiState['source'], vault
   for (const id of ['threshold', 'vaultAddress'] as const) $(id).classList.toggle('prefilled', prefilled && Boolean($(id).value));
   multi.source = source;
   multi.network = parsed.network;
-  multi.networkKeys = parsed.network ? parsed.keys.map(k => k.toLowerCase()) : [];
+  multi.networkKeys = parsed.extendedKeys.map(k => k.toLowerCase());
   if (source === 'descriptor') trustedKeys.clear();
   trustKeys(parsed.extendedKeys);
   if (source === 'wallet') $('descriptorNote').hidden = true;
