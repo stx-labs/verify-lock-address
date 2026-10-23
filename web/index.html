@@ -699,7 +699,8 @@
       margin-top: 16px;
     }
 
-    #walletNote { margin: 0 0 20px; }
+    #walletNote, #btcPick { margin: 0 0 20px; }
+    .btcpick-text { margin: 0 0 10px; }
 
     .banner.err  { background: var(--red-100);    color: var(--red-900); }
     .banner.warn { background: var(--yellow-100); color: var(--yellow-900); }
@@ -776,6 +777,13 @@
       </p>
 
       <div class="banner info" id="walletNote" hidden></div>
+
+      <div class="banner info" id="btcPick" hidden>
+        <div>
+          <p class="btcpick-text" id="btcPickText"></p>
+          <button type="button" class="btn btn-secondary btn-sm" id="pickBtcBtn">Select the Bitcoin wallet you plan to use</button>
+        </div>
+      </div>
 
       <div class="grid">
         <div class="field">

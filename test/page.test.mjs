@@ -261,8 +261,10 @@ test('an STX-only wallet reply connects and asks for the key', async () => {
   assert.equal(doc.getElementById('formErr').hidden, true);
   assert.equal(doc.getElementById('stxAddress').value, STX);
   assert.equal(doc.getElementById('pubkey').value, '');
-  assert.match(doc.getElementById('walletNote').textContent, /no Bitcoin public key/);
-  assert.match(doc.getElementById('walletNote').textContent, /paste the compressed key/i);
+  assert.equal(doc.getElementById('walletNote').hidden, true, 'the Bitcoin wallet offer says it instead');
+  assert.equal(doc.getElementById('btcPick').hidden, false);
+  assert.match(doc.getElementById('btcPickText').textContent, /no Bitcoin public key/);
+  assert.match(doc.getElementById('btcPickText').textContent, /paste the compressed key/i);
   assert.equal(doc.getElementById('network').value, 'private-1');
 });
 
@@ -327,6 +329,261 @@ test('disconnect clears the fields and the notice', async () => {
   assert.equal(doc.getElementById('walletNote').hidden, true);
   assert.equal(doc.getElementById('walletBadge').hidden, true);
   assert.equal(doc.getElementById('connectBtn').hidden, false);
+});
+
+const MAINNET_BTC = [{ symbol: 'BTC', type: 'p2wpkh', address: 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4', publicKey: KEY1 }];
+
+async function connectStxOnly(doc, window, address = STX) {
+  withLeather(window, [{ symbol: 'STX', address }]);
+  click(doc, 'connectBtn');
+  await settle();
+}
+
+test('the Bitcoin wallet offer appears only for a Stacks principal without a Bitcoin key or vault', async () => {
+  for (const [reply, shown] of [
+    [[{ symbol: 'STX', address: STX }], true],
+    [[{ symbol: 'STX', address: ALLOWLISTED }], true],
+    [[{ symbol: 'STX', address: STX }, ...BTC_ONLY], false],
+    [BTC_ONLY, false],
+    [POLICY_REPLY, false],
+    [[{ symbol: 'STX', address: ALLOWLISTED }, ...POLICY_REPLY], false],
+    [[], false],
+  ]) {
+    const { doc, window, errors } = loadPage();
+    assert.equal(doc.getElementById('btcPick').hidden, true, 'hidden before any connect');
+    withLeather(window, reply);
+    click(doc, 'connectBtn');
+    await settle();
+    assert.deepEqual(errors, []);
+    assert.equal(doc.getElementById('btcPick').hidden, !shown, JSON.stringify(reply));
+  }
+
+  const { doc, window } = loadPage();
+  await connectStxOnly(doc, window);
+  assert.equal(doc.getElementById('pickBtcBtn').textContent, 'Select the Bitcoin wallet you plan to use');
+  assert.match(doc.getElementById('btcPickText').textContent, /A Stacks multisig has no Bitcoin key of its own/);
+  assert.match(doc.getElementById('btcPickText').textContent, /takes two wallets/);
+  assert.match(doc.getElementById('btcPickText').textContent, /The Stacks address above stays as it is/);
+  assert.match(doc.getElementById('btcPickText').textContent, /click the account under "With account"/);
+  assert.match(doc.getElementById('btcPickText').textContent, /switch back to this Stacks account before you sign/);
+
+  const single = loadPage();
+  await connectStxOnly(single.doc, single.window, ALLOWLISTED);
+  assert.doesNotMatch(single.doc.getElementById('btcPickText').textContent, /multisig/);
+  assert.match(single.doc.getElementById('btcPickText').textContent, /a Bitcoin wallet, whose key unlocks the BTC/);
+});
+
+test('selecting the Bitcoin wallet fills the key and keeps the Stacks principal from the first connection', async () => {
+  const { doc, window, errors } = loadPage();
+  await connectStxOnly(doc, window);
+
+  const seen = withLeather(window, [{ symbol: 'STX', address: 'ST2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKNRV9EJ7' }, ...BTC_ONLY]);
+  click(doc, 'pickBtcBtn');
+  await settle();
+
+  assert.deepEqual(errors, []);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].allowPolicyAccounts, true);
+  assert.equal(doc.getElementById('formErr').hidden, true, doc.getElementById('formErr').textContent);
+  assert.equal(doc.getElementById('stxAddress').value, STX, 'the Stacks account of the second reply is ignored');
+  assert.ok(doc.getElementById('stxAddress').classList.contains('prefilled'));
+  assert.equal(doc.getElementById('pubkey').value, KEY2, 'the p2wpkh key is filled in');
+  assert.ok(doc.getElementById('pubkey').classList.contains('prefilled'));
+  assert.equal(doc.getElementById('paneSingle').hidden, false);
+  assert.equal(doc.getElementById('network').value, 'private-1');
+  assert.equal(doc.getElementById('btcPick').hidden, false);
+  assert.match(doc.getElementById('btcPickText').textContent, /public key below is from the Bitcoin wallet you selected/);
+  assert.match(doc.getElementById('btcPickText').textContent, /still the one from your first connection/);
+  assert.equal(doc.getElementById('pickBtcBtn').textContent, 'Select a different Bitcoin wallet');
+  assert.equal(doc.getElementById('pickBtcBtn').disabled, false);
+  assert.equal(doc.getElementById('walletNote').hidden, true);
+
+  window.fetch = stubApi({ network: 'private-1', bonds: [106] }).fetch;
+  setValue(doc, 'bondIndex', '106');
+  await runVerify(doc);
+
+  withLeather(window, [{ symbol: 'BTC', type: 'p2tr', address: BTC_ONLY[1].address, publicKey: KEY1 }]);
+  click(doc, 'pickBtcBtn');
+  await settle();
+  assert.equal(doc.getElementById('results').hidden, true, 'a new pick clears the shown result');
+  assert.equal(doc.getElementById('pubkey').value, KEY1);
+  assert.equal(doc.getElementById('stxAddress').value, STX);
+  assert.match(doc.getElementById('walletNote').textContent, /taproot \(p2tr\)/);
+});
+
+test('selecting a Leather policy account fills the multisig and keeps the Stacks principal', async () => {
+  const { doc, window, errors } = loadPage();
+  window.fetch = stubApi().fetch;
+  await connectStxOnly(doc, window, ALLOWLISTED);
+  assert.equal(doc.getElementById('network').value, 'mainnet');
+
+  withLeather(window, POLICY_REPLY);
+  click(doc, 'pickBtcBtn');
+  await settle();
+
+  assert.deepEqual(errors, []);
+  assert.equal(doc.getElementById('formErr').hidden, true, doc.getElementById('formErr').textContent);
+  assert.equal(doc.getElementById('stxAddress').value, ALLOWLISTED);
+  assert.equal(doc.getElementById('paneMulti').hidden, false);
+  assert.deepEqual(keyInputs(doc).map(i => i.value), VAULT_KEYS);
+  assert.ok(keyInputs(doc).every(i => i.classList.contains('prefilled')));
+  assert.equal(doc.getElementById('vaultAddress').value, VAULT);
+  assert.match(doc.getElementById('vaultInfo').textContent, /2-of-2 sortedmulti/);
+  assert.match(doc.getElementById('btcPickText').textContent, /multisig vault below is from the Bitcoin wallet you selected/);
+  assert.equal(doc.getElementById('walletNote').hidden, true, 'no "no Stacks address" note for the second reply');
+
+  setValue(doc, 'bondIndex', '2');
+  setValue(doc, 'expected', MULTI_LOCK_ADDRESS);
+  await runVerify(doc);
+  assert.equal(doc.getElementById('verdictMark').textContent, '✓');
+  assert.match(checksText(doc), /These keys and this threshold reproduce your vault address/);
+
+  withLeather(window, MAINNET_BTC);
+  click(doc, 'pickBtcBtn');
+  await settle();
+  assert.equal(doc.getElementById('paneSingle').hidden, false, 'a single-key pick after a vault drops the vault');
+  assert.equal(doc.getElementById('vaultAddress').value, '');
+  assert.equal(doc.getElementById('pubkey').value, KEY1);
+  assert.equal(doc.getElementById('stxAddress').value, ALLOWLISTED);
+});
+
+test('a cancelled or empty Bitcoin wallet reply changes nothing and says why', async () => {
+  for (const [reply, shown] of [
+    [() => Promise.reject({ jsonrpc: '2.0', id: '1', error: { code: 4001, message: 'User rejected request' } }), /^You cancelled the request in Leather\.$/],
+    [() => ({ result: { addresses: [] } }), /no Bitcoin public key for the selected account either/],
+    [() => ({ result: { addresses: [{ symbol: 'STX', address: ALLOWLISTED }] } }), /no Bitcoin public key for the selected account either/],
+    [() => ({}), /no Bitcoin public key for the selected account either/],
+  ]) {
+    const { doc, window, errors } = loadPage();
+    await connectStxOnly(doc, window);
+    setValue(doc, 'pubkey', KEY1);
+    window.LeatherProvider = { request: async () => reply() };
+    click(doc, 'pickBtcBtn');
+    await settle();
+
+    assert.deepEqual(errors, []);
+    assert.equal(doc.getElementById('formErr').hidden, false);
+    assert.match(doc.getElementById('formErr').textContent, shown);
+    assert.equal(doc.getElementById('stxAddress').value, STX);
+    assert.equal(doc.getElementById('pubkey').value, KEY1, 'a typed key is left alone');
+    assert.equal(doc.getElementById('btcPick').hidden, false, 'can try again');
+    assert.equal(doc.getElementById('pickBtcBtn').disabled, false);
+    assert.equal(doc.getElementById('pickBtcBtn').textContent, 'Select the Bitcoin wallet you plan to use');
+  }
+});
+
+test('a Bitcoin wallet for the other network is refused, and nothing is filled', async () => {
+  for (const [first, reply, label] of [
+    [STX, MAINNET_BTC, /bc1…\), but the Stacks address is a private-1 one/],
+    [ALLOWLISTED, BTC_ONLY, /bcrt1…\), but the Stacks address is a mainnet one/],
+    [ALLOWLISTED, [{ ...POLICY_REPLY[0], address: ADDRESS }], /bcrt1…\), but the Stacks address is a mainnet one/],
+    [STX, [{ symbol: 'BTC', type: 'p2wpkh', address: 'tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx', publicKey: KEY1 }], /tb1…\)/],
+  ]) {
+    const { doc, window } = loadPage();
+    await connectStxOnly(doc, window, first);
+    const network = doc.getElementById('network').value;
+    withLeather(window, reply);
+    click(doc, 'pickBtcBtn');
+    await settle();
+
+    assert.match(doc.getElementById('formErr').textContent, label);
+    assert.match(doc.getElementById('formErr').textContent, /Switch Leather to/);
+    assert.equal(doc.getElementById('pubkey').value, '');
+    assert.equal(doc.getElementById('paneSingle').hidden, false);
+    assert.equal(doc.getElementById('vaultAddress').value, '');
+    assert.equal(doc.getElementById('stxAddress').value, first);
+    assert.equal(doc.getElementById('network').value, network);
+  }
+
+  const { doc, window } = loadPage();
+  await connectStxOnly(doc, window);
+  withLeather(window, [{ symbol: 'BTC', type: 'p2wpkh', publicKey: KEY1 }]);
+  click(doc, 'pickBtcBtn');
+  await settle();
+  assert.equal(doc.getElementById('formErr').hidden, true, 'a key without an address has no network to disagree with');
+  assert.equal(doc.getElementById('pubkey').value, KEY1);
+});
+
+test('disconnect clears what both connections filled in, and keeps what the staker typed', async () => {
+  const { doc, window } = loadPage();
+  await connectStxOnly(doc, window);
+  withLeather(window, BTC_ONLY);
+  click(doc, 'pickBtcBtn');
+  await settle();
+
+  click(doc, 'disconnectBtn');
+  assert.equal(doc.getElementById('stxAddress').value, '');
+  assert.equal(doc.getElementById('pubkey').value, '');
+  assert.ok(!['stxAddress', 'pubkey'].some(id => doc.getElementById(id).classList.contains('prefilled')));
+  assert.equal(doc.getElementById('btcPick').hidden, true);
+  assert.equal(doc.getElementById('walletNote').hidden, true);
+  assert.equal(doc.getElementById('connectBtn').hidden, false);
+
+  const vault = loadPage();
+  await connectStxOnly(vault.doc, vault.window, ALLOWLISTED);
+  withLeather(vault.window, POLICY_REPLY);
+  click(vault.doc, 'pickBtcBtn');
+  await settle();
+  click(vault.doc, 'disconnectBtn');
+  assert.equal(vault.doc.getElementById('stxAddress').value, '');
+  assert.equal(vault.doc.getElementById('paneSingle').hidden, false);
+  assert.equal(vault.doc.getElementById('vaultAddress').value, '');
+  assert.equal(vault.doc.getElementById('vaultInfo').hidden, true);
+  assert.deepEqual(keyInputs(vault.doc).map(i => i.value), ['', '']);
+  assert.equal(vault.doc.getElementById('btcPick').hidden, true);
+
+  const typed = loadPage();
+  await connectStxOnly(typed.doc, typed.window);
+  setValue(typed.doc, 'stxAddress', ALLOWLISTED);
+  withLeather(typed.window, MAINNET_BTC);
+  click(typed.doc, 'pickBtcBtn');
+  await settle();
+  assert.equal(typed.doc.getElementById('pubkey').value, KEY1, 'the network follows the principal now in the field');
+  click(typed.doc, 'disconnectBtn');
+  assert.equal(typed.doc.getElementById('stxAddress').value, ALLOWLISTED, 'a typed principal stays');
+  assert.equal(typed.doc.getElementById('pubkey').value, '');
+});
+
+test('a Bitcoin wallet reply that arrives after disconnecting is discarded', async () => {
+  const { doc, window, errors } = loadPage();
+  await connectStxOnly(doc, window);
+  let answer;
+  window.LeatherProvider = { request: () => new Promise(r => (answer = r)) };
+  click(doc, 'pickBtcBtn');
+  await settle();
+  assert.equal(doc.getElementById('pickBtcBtn').disabled, true);
+  assert.equal(doc.getElementById('pickBtcBtn').textContent, 'Waiting for Leather…');
+
+  click(doc, 'disconnectBtn');
+  answer({ result: { addresses: BTC_ONLY } });
+  await settle();
+
+  assert.deepEqual(errors, []);
+  assert.equal(doc.getElementById('pubkey').value, '');
+  assert.equal(doc.getElementById('btcPick').hidden, true);
+  assert.equal(doc.getElementById('walletBadge').hidden, true);
+  assert.equal(doc.getElementById('formErr').hidden, true);
+});
+
+test('a key from the selected Bitcoin wallet needs no confirmation, until it is edited', async () => {
+  const { doc, window } = loadPage();
+  const stub = stubApi();
+  window.fetch = stub.fetch;
+  await connectStxOnly(doc, window, ALLOWLISTED);
+  withLeather(window, [{ ...MAINNET_BTC[0], publicKey: AMBIGUOUS_PUBKEY }]);
+  click(doc, 'pickBtcBtn');
+  await settle();
+
+  setValue(doc, 'bondIndex', '2');
+  await runVerify(doc);
+  assert.equal(doc.getElementById('confirmPubkeysBox').hidden, true);
+
+  setValue(doc, 'pubkey', ` ${AMBIGUOUS_PUBKEY}`);
+  stub.requests.length = 0;
+  click(doc, 'verifyBtn');
+  await settle();
+  assert.deepEqual(stub.requests, []);
+  assert.match(doc.getElementById('formErr').textContent, /exactly what a Stacks private key looks like/);
 });
 
 const lockAddress = (staker, pubkey) => {
@@ -993,6 +1250,11 @@ test('any change to the inputs, mode, network or wallet clears a shown result', 
       await settle();
     },
     disconnect: (doc) => click(doc, 'disconnectBtn'),
+    'bitcoin wallet pick': async (doc, window) => {
+      withLeather(window, MAINNET_BTC);
+      click(doc, 'pickBtcBtn');
+      await settle();
+    },
   };
   for (const [what, change] of Object.entries(changes)) {
     const { doc, window } = loadPage();
