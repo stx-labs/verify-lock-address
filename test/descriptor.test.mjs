@@ -302,7 +302,7 @@ test('the checksum covers the descriptor exactly as written, spaces included', (
 
   const strippedSum = descriptorChecksum(SPACED.replace(/\s+/g, ''));
   assert.notEqual(strippedSum, '729lpcg2');
-  assert.throws(() => parseMultisigDescriptor(`${SPACED}#${strippedSum}`), /checksum does not match/);
+  assert.throws(() => parseMultisigDescriptor(`${SPACED}#${strippedSum}`), /looks like a private key/);
   assert.deepEqual(parseMultisigDescriptor(`${SPACED.replace(/\s+/g, '')}#${strippedSum}`).keys, [PK_A, PK_B]);
 });
 

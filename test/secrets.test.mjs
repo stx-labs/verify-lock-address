@@ -15,6 +15,7 @@ import {
   screenFields,
   tooLongError,
 } from '../web/src/secrets.ts';
+import { descriptorChecksum } from '../web/src/checksum.ts';
 import { AMBIGUOUS_PUBKEY, embeddings, PK, PK_C, PK_NO_ZERO, PRIVATE_KEYS, SP, STX, TPUB, XPUB, ZPUB } from './helpers/secrets.mjs';
 import { DESCRIPTOR, LOCK_ADDRESS, VAULT } from './helpers/stub-api.mjs';
 
@@ -115,25 +116,31 @@ test('a long hex run passes only as a list of compressed keys or a chain of sing
   }
 });
 
-test('a descriptor of raw keys survives the reading that strips its separators: threshold digits may precede the key list, and a #checksum is dropped', () => {
+const withChecksum = body => `${body}#${descriptorChecksum(body)}`;
+
+test('a descriptor of raw keys survives the reading that strips its separators: threshold digits may precede the key list, and a valid #checksum is dropped', () => {
   const secret = PK_C.slice(2);
   const descriptors = {
     'one key': `wsh(multi(1,${PK}))`,
     'two-digit threshold': `wsh(multi(12,${Array(12).fill(PK).join(',')},${PK_C}))`,
     'leading zero threshold': `wsh(multi(01,${PK_C}))`,
-    'three keys with an all-hex checksum': `wsh(multi(2,${PK},${PK_C},${PK_NO_ZERO}))#deadfeed`,
-    'sortedmulti with a checksum': `wsh(sortedmulti(2,${PK},${PK_C}))#3wv0784k`,
+    'three keys with a checksum': withChecksum(`wsh(multi(2,${PK},${PK_C},${PK_NO_ZERO}))`),
+    'sortedmulti with a checksum': withChecksum(`wsh(sortedmulti(2,${PK},${PK_C}))`),
     'spaces and newlines': `  wsh(multi(1,\n  ${PK.toUpperCase()}))  `,
-    'whitespace after the checksum': `wsh(multi(1,${PK}))#3wv0784k \n`,
+    'whitespace after the checksum': `${withChecksum(`wsh(multi(1,${PK}))`)} \n`,
   };
   for (const [what, text] of Object.entries(descriptors)) {
     assert.equal(classifySecret(text), null, what);
     assert.doesNotThrow(() => assertNoPrivateKey(text), what);
   }
-  assert.equal(classifySecret(`wsh(multi(1,${AMBIGUOUS_PUBKEY},${PK}))#3wv0784k`), 'ambiguous');
+  assert.equal(classifySecret(withChecksum(`wsh(multi(1,${AMBIGUOUS_PUBKEY},${PK}))`)), 'ambiguous');
+  const bechSafeKey = 'e8f32e723decf4051aefac8e2c93c9c5b214313817cdb01a1494b917c8436d35';
   const refused = {
+    'a raw key split by a # before its last eight characters': `${bechSafeKey.slice(0, 56)}#${bechSafeKey.slice(56)}`,
+    'digits split from hex by a #': `${'1'.repeat(56)}#deadfeed`,
+    'a descriptor with a well-formed but wrong checksum after a raw key': `wsh(multi(2,${PK},${PK_C}))#deadfeed`,
     'threshold before a raw key': `wsh(multi(1,${secret}))`,
-    'threshold before a raw key with a checksum': `wsh(multi(2,${PK},${secret}))#3wv0784k`,
+    'threshold before a raw key with a checksum': withChecksum(`wsh(multi(2,${PK},${secret}))`),
     'threshold before a Stacks private key': `wsh(multi(1,${PRIVATE_KEYS['Stacks hex private key']},${PK}))`,
     'a secret split by a # that is not a checksum': `wsh(multi(1,${PK}))#${secret.slice(0, 20)}.${secret.slice(20)}`,
     'three digits before a key': `100${PK}`,

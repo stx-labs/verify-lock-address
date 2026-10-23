@@ -2,6 +2,7 @@ import { base58 } from '@scure/base';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { hexToBytes } from '@noble/hashes/utils.js';
 
+import { descriptorChecksum } from './checksum.ts';
 import { disassemble } from './script-view.ts';
 
 const BASE58_RUN = /[1-9A-HJ-NP-Za-km-z]+/g;
@@ -115,7 +116,7 @@ const RAW_KEY_LENGTH = 64;
 const MAX_PADDED_KEY_LENGTH = 69;
 const COMPRESSED_KEY_BYTES = 33;
 const KEY_LIST_RE = /^\d{0,2}((?:0[23][0-9a-f]{64})+)$/i;
-const DESCRIPTOR_CHECKSUM_RE = /#[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{8}$/;
+const DESCRIPTOR_CHECKSUM_RE = /^([^#]*)#([qpzry9x8gf2tvdw0s3jn54khce6mua7l]{8})$/;
 const UNLOCK_SCRIPTS_RE = /^(?:210[23][0-9a-f]{64}a[cd]|(?:5[1-9a-f]|60|01[0-9a-f]{2})(?:210[23][0-9a-f]{64})+(?:5[1-9a-f]|60|01[0-9a-f]{2})a[ef])+$/i;
 
 function publicKeysIn(run: string): string[] | null {
@@ -139,10 +140,21 @@ function hexRunKind(run: string): SecretKind | null {
   return PUBLIC_HEX_RE.test(run) ? null : longHexRunKind(run);
 }
 
+function withoutDescriptorChecksum(text: string): string {
+  const m = text.trim().match(DESCRIPTOR_CHECKSUM_RE);
+  if (!m) return text;
+  try {
+    return descriptorChecksum(m[1]) === m[2] ? m[1] : text;
+  } catch {
+    return text;
+  }
+}
+
 export function readings(text: string): string[] {
   const normal = text.normalize('NFKC').replace(/\p{Cf}/gu, '');
   const compact = normal.replace(/\s+/g, '');
-  return [...new Set([text, normal, compact, compact.replace(DESCRIPTOR_CHECKSUM_RE, '').replace(NOT_KEY_MATERIAL, '')])];
+  const separated = withoutDescriptorChecksum(normal).replace(/\s+/g, '').replace(NOT_KEY_MATERIAL, '');
+  return [...new Set([text, normal, compact, separated])];
 }
 
 export function classifySecret(value: unknown): SecretKind | null {
