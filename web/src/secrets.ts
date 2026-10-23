@@ -116,6 +116,7 @@ const RAW_KEY_LENGTH = 64;
 const MAX_PADDED_KEY_LENGTH = 69;
 const COMPRESSED_KEY_BYTES = 33;
 const KEY_LIST_RE = /^\d{0,2}((?:0[23][0-9a-f]{64})+)$/i;
+const ORIGIN_BEFORE_KEY_RE = /\[[0-9a-fA-F]{8}(?:\/\d+['hH]?)*\](0[23][0-9a-fA-F]{64})(?![0-9a-fA-F])/g;
 const DESCRIPTOR_CHECKSUM_RE = /^([^#]*)#([qpzry9x8gf2tvdw0s3jn54khce6mua7l]{8})$/;
 const UNLOCK_SCRIPTS_RE = /^(?:210[23][0-9a-f]{64}a[cd]|(?:5[1-9a-f]|60|01[0-9a-f]{2})(?:210[23][0-9a-f]{64})+(?:5[1-9a-f]|60|01[0-9a-f]{2})a[ef])+$/i;
 
@@ -153,7 +154,10 @@ function withoutDescriptorChecksum(text: string): string {
 export function readings(text: string): string[] {
   const normal = text.normalize('NFKC').replace(/\p{Cf}/gu, '');
   const compact = normal.replace(/\s+/g, '');
-  const separated = withoutDescriptorChecksum(normal).replace(/\s+/g, '').replace(NOT_KEY_MATERIAL, '');
+  const separated = withoutDescriptorChecksum(normal)
+    .replace(/\s+/g, '')
+    .replace(ORIGIN_BEFORE_KEY_RE, '$1')
+    .replace(NOT_KEY_MATERIAL, '');
   return [...new Set([text, normal, compact, separated])];
 }
 

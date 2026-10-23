@@ -236,3 +236,33 @@ test('scanning the largest accepted value of worst-case characters stays quick',
     assert.ok(Date.now() - started < 3000, `${ch}: ${Date.now() - started} ms`);
   }
 });
+
+test('raw public keys behind a key origin survive the reading that strips separators', () => {
+  const secret = PK_C.slice(2);
+  const descriptors = {
+    'fingerprint only': `wsh(multi(1,[deadbeef]${PK}))`,
+    'fingerprint and apostrophe path': `wsh(multi(1,[deadbeef/48'/0'/0'/2']${PK}))`,
+    'fingerprint and h path': `wsh(multi(2,[DEADBEEF/48h/0h/0h/2h]${PK},[c0ffee00/0/1]${PK_C}))`,
+    'origins on some keys only': `wsh(sortedmulti(2,${PK},[deadbeef/48'/0'/0'/2']${PK_C},${PK_NO_ZERO}))`,
+    'with a checksum': withChecksum(`wsh(multi(2,[deadbeef/48'/0'/0'/2']${PK},[c0ffee00]${PK_C}))`),
+    'with spaces': ` wsh(multi(1, [deadbeef/48'/0'] ${PK} )) `,
+  };
+  for (const [what, text] of Object.entries(descriptors)) {
+    assert.equal(classifySecret(text), null, what);
+    assert.doesNotThrow(() => assertNoPrivateKey(text), what);
+  }
+  assert.equal(classifySecret(`wsh(multi(1,[deadbeef/48'/0'/0'/2']${AMBIGUOUS_PUBKEY},${PK}))`), 'ambiguous');
+
+  const refused = {
+    'a raw private key behind an origin': `wsh(multi(1,[deadbeef]${secret}))`,
+    'a raw private key behind a path origin': `wsh(multi(1,[deadbeef/48'/0'/0'/2']${secret},${PK}))`,
+    'a key with hex glued after it, behind an origin': `wsh(multi(1,[deadbeef]${PK}3))`,
+    'a raw private key split around an origin': `${secret.slice(0, 32)}[deadbeef]${secret.slice(32)}`,
+    'a raw private key before an origin-tagged key': `wsh(multi(2,${secret}[deadbeef]${PK}))`,
+    'a malformed origin before a key': `wsh(multi(1,[deadbee]${PK}))`,
+  };
+  for (const [what, text] of Object.entries(refused)) {
+    assert.equal(classifySecret(text), 'private', what);
+    assert.throws(() => assertNoPrivateKey(text), e => e.message === PRIVATE_KEY_ERROR, what);
+  }
+});

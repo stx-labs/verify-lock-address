@@ -5,11 +5,12 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import test, { before } from 'node:test';
 
+import { sha256 } from '@noble/hashes/sha2.js';
 import { bech32 } from '@scure/base';
-import { hexToBytes } from '@stacks/common';
+import { bytesToHex, hexToBytes } from '@stacks/common';
 import { JSDOM } from 'jsdom';
 
-import { NETWORKS } from '../web/src/lock.ts';
+import { buildMultisigUnlockScript, NETWORKS, outputScriptToAddress } from '../web/src/lock.ts';
 import { deadlineError, isTransient, reachable, skipOnTransient } from './helpers/live.mjs';
 import { AMBIGUOUS_PUBKEY, embeddings, PRIVATE_KEYS } from './helpers/secrets.mjs';
 import {
@@ -981,6 +982,7 @@ test('any change to the inputs, mode, network or wallet clears a shown result', 
       doc.getElementById('sortKeys').checked = false;
       doc.getElementById('sortKeys').dispatchEvent(new window.Event('change', { bubbles: true }));
     },
+    'add key': (doc) => click(doc, 'addKeyBtn'),
     'remove key': (doc, window) => {
       click(doc, 'addKeyBtn');
       doc.querySelector('#keyList .keyrow:last-child button').dispatchEvent(new window.Event('click', { bubbles: true }));
@@ -1401,4 +1403,67 @@ test('the public-key confirmation covers only the exact keys it was given; every
     assert.equal(doc.getElementById('confirmPubkeys').checked, false, `${name}: stale tick cleared`);
     assert.equal(doc.getElementById('confirmPubkeysBox').hidden, false, `${name}: asked again`);
   }
+});
+
+test('adding a key row discards a verification still running', async () => {
+  const { doc, window } = loadPage();
+  const stub = stubApi();
+  let release;
+  const gate = new Promise(r => {
+    release = r;
+  });
+  window.fetch = async (url, init) => {
+    await gate;
+    return stub.fetch(url, init);
+  };
+  fillForm(doc, window, 'multi');
+  click(doc, 'verifyBtn');
+  await settle();
+  assert.equal(doc.getElementById('verifyBtn').disabled, true);
+  click(doc, 'addKeyBtn');
+  assert.equal(doc.getElementById('verifyBtn').disabled, false);
+  release();
+  await new Promise(r => setTimeout(r, 300));
+  assert.equal(doc.getElementById('results').hidden, true);
+  assert.equal(doc.getElementById('formErr').hidden, true);
+});
+
+test('raw keys in a Leather policy descriptor are trusted as public, origins included', async () => {
+  const keys = [AMBIGUOUS_PUBKEY, VAULT_KEYS[0]];
+  const witness = buildMultisigUnlockScript(keys, 2);
+  const vault = outputScriptToAddress(`0020${bytesToHex(sha256(witness))}`, 'bc');
+  const descriptor = `wsh(multi(2,[deadbeef/48'/0'/0'/2']${keys[0]},[c0ffee00]${keys[1]}))`;
+
+  const { doc, window, errors } = loadPage();
+  withLeather(window, [{ symbol: 'STX', address: ALLOWLISTED }, { symbol: 'BTC', type: 'p2wsh', address: vault, descriptor }]);
+  const stub = stubApi();
+  window.fetch = stub.fetch;
+  click(doc, 'connectBtn');
+  await settle();
+
+  assert.deepEqual(errors, []);
+  assert.equal(doc.getElementById('formErr').hidden, true, doc.getElementById('formErr').textContent);
+  assert.deepEqual(keyInputs(doc).map(i => i.value), keys);
+  assert.equal(doc.getElementById('vaultAddress').value, vault);
+  setValue(doc, 'bondIndex', '2');
+  await runVerify(doc);
+  assert.ok(stub.requests.length > 0);
+  assert.equal(doc.getElementById('confirmPubkeysBox').hidden, true);
+
+  put(doc, 'key row', ` ${AMBIGUOUS_PUBKEY}`);
+  stub.requests.length = 0;
+  click(doc, 'verifyBtn');
+  await settle();
+  assert.deepEqual(stub.requests, [], 'after an edit the key is no longer the one Leather filled in');
+  assert.match(doc.getElementById('formErr').textContent, /exactly what a Stacks private key looks like/);
+});
+
+test('a pasted descriptor with origin-tagged raw keys fills the form', () => {
+  const { doc, window } = loadPage();
+  doc.querySelector('#modeSeg [data-mode="multi"]').dispatchEvent(new window.Event('click', { bubbles: true }));
+  setValue(doc, 'descriptor', `wsh(sortedmulti(2,[deadbeef]${VAULT_KEYS[1]},[c0ffee00/48'/0'/0'/2']${VAULT_KEYS[0]}))`);
+  click(doc, 'useDescriptorBtn');
+  assert.equal(doc.getElementById('descriptorNote').style.color, '', doc.getElementById('descriptorNote').textContent);
+  assert.deepEqual(keyInputs(doc).map(i => i.value), [VAULT_KEYS[1], VAULT_KEYS[0]]);
+  assert.equal(doc.getElementById('sortKeys').checked, true);
 });

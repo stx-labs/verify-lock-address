@@ -248,7 +248,7 @@ function fillMulti(parsed: ParsedDescriptor, source: MultiState['source'], vault
   multi.network = parsed.network;
   multi.networkKeys = parsed.extendedKeys.map(k => k.toLowerCase());
   if (source === 'descriptor') trustedKeys.clear();
-  trustKeys(parsed.extendedKeys);
+  trustKeys(source === 'wallet' ? parsed.keys : parsed.extendedKeys);
   if (source === 'wallet') $('descriptorNote').hidden = true;
   setMode('multi');
 }
@@ -458,6 +458,7 @@ function main(): void {
   $('addKeyBtn').addEventListener('click', () => {
     if ($('keyList').children.length >= MAX_MULTISIG_KEYS) return;
     resetConfirmation();
+    invalidate();
     addKeyRow().focus();
   });
 
