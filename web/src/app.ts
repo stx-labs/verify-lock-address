@@ -134,6 +134,14 @@ const PICK_LABEL = 'Select the Bitcoin wallet you plan to use';
 const REPICK_LABEL = 'Select a different Bitcoin wallet';
 const WAITING_LABEL = 'Waiting for Leather…';
 
+let pickRequest = 0;
+
+function resetBitcoinPick(): void {
+  pickRequest += 1;
+  $('pickBtcBtn').disabled = false;
+  $('pickBtcBtn').textContent = PICK_LABEL;
+}
+
 const isMultisigPrincipal = (principal: string) => /^S[MN]/.test(principal);
 
 function principalNetwork(): NetworkName {
@@ -158,7 +166,6 @@ function offerBitcoinPick(principal: string): void {
     h('strong', null, 'paste the compressed key yourself'),
     ' — the 33-byte key whose signature will unlock the timelocked output.'
   );
-  $('pickBtcBtn').textContent = PICK_LABEL;
   $('btcPick').hidden = false;
 }
 
@@ -613,6 +620,7 @@ function main(): void {
       const notes = walletNotes(w);
       fillBitcoin(w, notes);
 
+      resetBitcoinPick();
       if (w.stxAddress && w.missing.includes('btc')) offerBitcoinPick(w.stxAddress);
       else $('btcPick').hidden = true;
 
@@ -642,6 +650,8 @@ function main(): void {
     const btn = $('pickBtcBtn');
     const label = btn.textContent;
     const session = walletSession;
+    pickRequest += 1;
+    const request = pickRequest;
     btn.disabled = true;
     btn.textContent = WAITING_LABEL;
     try {
@@ -678,8 +688,10 @@ function main(): void {
     } catch (e) {
       if (session === walletSession) showError(e);
     } finally {
-      btn.disabled = false;
-      if (btn.textContent === WAITING_LABEL) btn.textContent = label;
+      if (request === pickRequest) {
+        btn.disabled = false;
+        if (btn.textContent === WAITING_LABEL) btn.textContent = label;
+      }
     }
   });
 
@@ -693,6 +705,7 @@ function main(): void {
     $('disconnectBtn').hidden = true;
     $('walletNote').hidden = true;
     $('btcPick').hidden = true;
+    resetBitcoinPick();
     dropWalletValues();
     $('vaultInfo').hidden = true;
   });

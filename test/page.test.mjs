@@ -565,6 +565,42 @@ test('a Bitcoin wallet reply that arrives after disconnecting is discarded', asy
   assert.equal(doc.getElementById('formErr').hidden, true);
 });
 
+test('a Bitcoin wallet request left over from an earlier session neither blocks nor releases the next pick', async () => {
+  const { doc, window, errors } = loadPage();
+  const answers = [];
+  const pending = () => ({ request: () => new Promise(r => answers.push(r)) });
+  const btn = doc.getElementById('pickBtcBtn');
+
+  await connectStxOnly(doc, window);
+  window.LeatherProvider = pending();
+  click(doc, 'pickBtcBtn');
+  await settle();
+  assert.equal(btn.disabled, true);
+
+  click(doc, 'disconnectBtn');
+  await connectStxOnly(doc, window);
+  assert.equal(doc.getElementById('btcPick').hidden, false);
+  assert.equal(btn.disabled, false, 'the new session can pick at once');
+  assert.equal(btn.textContent, 'Select the Bitcoin wallet you plan to use');
+
+  window.LeatherProvider = pending();
+  click(doc, 'pickBtcBtn');
+  await settle();
+  answers[0]({ result: { addresses: [{ symbol: 'BTC', type: 'p2wpkh', address: BTC_ONLY[0].address, publicKey: KEY1 }] } });
+  await settle();
+  assert.equal(btn.disabled, true, 'the obsolete reply does not re-enable the button');
+  assert.equal(btn.textContent, 'Waiting for Leather…');
+  assert.equal(doc.getElementById('pubkey').value, '', 'the obsolete reply fills nothing');
+
+  answers[1]({ result: { addresses: BTC_ONLY } });
+  await settle();
+  assert.deepEqual(errors, []);
+  assert.equal(doc.getElementById('pubkey').value, KEY2);
+  assert.equal(doc.getElementById('stxAddress').value, STX);
+  assert.equal(btn.disabled, false);
+  assert.equal(btn.textContent, 'Select a different Bitcoin wallet');
+});
+
 test('a key from the selected Bitcoin wallet needs no confirmation, until it is edited', async () => {
   const { doc, window } = loadPage();
   const stub = stubApi();
