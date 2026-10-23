@@ -15,6 +15,7 @@ import {
   screenFields,
   tooLongError,
 } from '../web/src/secrets.ts';
+import { descriptorChecksum } from '../web/src/checksum.ts';
 import { AMBIGUOUS_PUBKEY, embeddings, PK, PK_C, PK_NO_ZERO, PRIVATE_KEYS, SP, STX, TPUB, XPUB, ZPUB } from './helpers/secrets.mjs';
 import { DESCRIPTOR, LOCK_ADDRESS, VAULT } from './helpers/stub-api.mjs';
 
@@ -115,6 +116,50 @@ test('a long hex run passes only as a list of compressed keys or a chain of sing
   }
 });
 
+const withChecksum = body => `${body}#${descriptorChecksum(body)}`;
+
+test('a descriptor of raw keys survives the reading that strips its separators: threshold digits may precede the key list, and a valid #checksum is dropped', () => {
+  const secret = PK_C.slice(2);
+  const descriptors = {
+    'one key': `wsh(multi(1,${PK}))`,
+    'two-digit threshold': `wsh(multi(12,${Array(12).fill(PK).join(',')},${PK_C}))`,
+    'leading zero threshold': `wsh(multi(01,${PK_C}))`,
+    'three keys with a checksum': withChecksum(`wsh(multi(2,${PK},${PK_C},${PK_NO_ZERO}))`),
+    'sortedmulti with a checksum': withChecksum(`wsh(sortedmulti(2,${PK},${PK_C}))`),
+    'spaces and newlines': `  wsh(multi(1,\n  ${PK.toUpperCase()}))  `,
+    'whitespace after the checksum': `${withChecksum(`wsh(multi(1,${PK}))`)} \n`,
+  };
+  for (const [what, text] of Object.entries(descriptors)) {
+    assert.equal(classifySecret(text), null, what);
+    assert.doesNotThrow(() => assertNoPrivateKey(text), what);
+  }
+  assert.equal(classifySecret(withChecksum(`wsh(multi(1,${AMBIGUOUS_PUBKEY},${PK}))`)), 'ambiguous');
+  const bechSafeKey = 'e8f32e723decf4051aefac8e2c93c9c5b214313817cdb01a1494b917c8436d35';
+  const refused = {
+    'a raw key split by a # before its last eight characters': `${bechSafeKey.slice(0, 56)}#${bechSafeKey.slice(56)}`,
+    'digits split from hex by a #': `${'1'.repeat(56)}#deadfeed`,
+    'a descriptor with a well-formed but wrong checksum after a raw key': `wsh(multi(2,${PK},${PK_C}))#deadfeed`,
+    'threshold before a raw key': `wsh(multi(1,${secret}))`,
+    'threshold before a raw key with a checksum': withChecksum(`wsh(multi(2,${PK},${secret}))`),
+    'threshold before a Stacks private key': `wsh(multi(1,${PRIVATE_KEYS['Stacks hex private key']},${PK}))`,
+    'a secret split by a # that is not a checksum': `wsh(multi(1,${PK}))#${secret.slice(0, 20)}.${secret.slice(20)}`,
+    'three digits before a key': `100${PK}`,
+    'one hex character after a key': `${PK}3`,
+    'a checksum of seven characters': `wsh(multi(2,${PK},${PK_C}))#3wv0784`,
+    'a checksum of nine characters': `wsh(multi(2,${PK},${PK_C}))#3wv0784kk`,
+    'a checksum with a character outside bech32': `wsh(multi(2,${PK},${PK_C}))#3wv0784b`,
+    'a checksum that is not the last thing': `wsh(multi(2,${PK},${PK_C}))#3wv0784k,${PK_NO_ZERO}`,
+    'digits before a raw key': `12${secret}`,
+    'stray hex around a raw key': `1${secret}f`,
+    'letters before a key': `ab${PK}`,
+    'word before a key list': `deadbeef${PK}${PK_C}`,
+  };
+  for (const [what, text] of Object.entries(refused)) {
+    assert.equal(classifySecret(text), 'private', what);
+    assert.throws(() => assertNoPrivateKey(text), e => e.message === PRIVATE_KEY_ERROR, what);
+  }
+});
+
 test('a 66-hex value starting 02/03 and ending 01 is ambiguous: allowed only in a key field, refused everywhere else', () => {
   assert.equal(classifySecret(AMBIGUOUS_PUBKEY), 'ambiguous');
   assert.equal(containsAmbiguousKey(AMBIGUOUS_PUBKEY), true);
@@ -189,5 +234,35 @@ test('scanning the largest accepted value of worst-case characters stays quick',
     const started = Date.now();
     assert.equal(containsPrivateKey(ch.repeat(MAX_DESCRIPTOR_LENGTH)), hex, ch);
     assert.ok(Date.now() - started < 3000, `${ch}: ${Date.now() - started} ms`);
+  }
+});
+
+test('raw public keys behind a key origin survive the reading that strips separators', () => {
+  const secret = PK_C.slice(2);
+  const descriptors = {
+    'fingerprint only': `wsh(multi(1,[deadbeef]${PK}))`,
+    'fingerprint and apostrophe path': `wsh(multi(1,[deadbeef/48'/0'/0'/2']${PK}))`,
+    'fingerprint and h path': `wsh(multi(2,[DEADBEEF/48h/0h/0h/2h]${PK},[c0ffee00/0/1]${PK_C}))`,
+    'origins on some keys only': `wsh(sortedmulti(2,${PK},[deadbeef/48'/0'/0'/2']${PK_C},${PK_NO_ZERO}))`,
+    'with a checksum': withChecksum(`wsh(multi(2,[deadbeef/48'/0'/0'/2']${PK},[c0ffee00]${PK_C}))`),
+    'with spaces': ` wsh(multi(1, [deadbeef/48'/0'] ${PK} )) `,
+  };
+  for (const [what, text] of Object.entries(descriptors)) {
+    assert.equal(classifySecret(text), null, what);
+    assert.doesNotThrow(() => assertNoPrivateKey(text), what);
+  }
+  assert.equal(classifySecret(`wsh(multi(1,[deadbeef/48'/0'/0'/2']${AMBIGUOUS_PUBKEY},${PK}))`), 'ambiguous');
+
+  const refused = {
+    'a raw private key behind an origin': `wsh(multi(1,[deadbeef]${secret}))`,
+    'a raw private key behind a path origin': `wsh(multi(1,[deadbeef/48'/0'/0'/2']${secret},${PK}))`,
+    'a key with hex glued after it, behind an origin': `wsh(multi(1,[deadbeef]${PK}3))`,
+    'a raw private key split around an origin': `${secret.slice(0, 32)}[deadbeef]${secret.slice(32)}`,
+    'a raw private key before an origin-tagged key': `wsh(multi(2,${secret}[deadbeef]${PK}))`,
+    'a malformed origin before a key': `wsh(multi(1,[deadbee]${PK}))`,
+  };
+  for (const [what, text] of Object.entries(refused)) {
+    assert.equal(classifySecret(text), 'private', what);
+    assert.throws(() => assertNoPrivateKey(text), e => e.message === PRIVATE_KEY_ERROR, what);
   }
 });

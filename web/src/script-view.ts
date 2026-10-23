@@ -164,6 +164,12 @@ export function tokenText(tok: Token): string {
   return tok.text;
 }
 
+export function countValue(tok: Token | null | undefined): number | null {
+  if (tok?.kind === 'smallnum') return tok.n;
+  if (tok?.kind === 'push' && tok.len === 1) return decodeScriptNum(tok.data);
+  return null;
+}
+
 export function annotate(
   tokens: Token[],
   segment: Segment,
@@ -208,12 +214,13 @@ export function annotate(
       if (tok.kind === 'push' && tok.len === 33) {
         keyIndex += 1;
         cmt = `your key #${keyIndex} — check this against your wallet`;
-      } else if (tok.kind === 'smallnum') {
+      } else if (countValue(tok) !== null) {
+        const n = countValue(tok);
         cmt = ctx.threshold === undefined
           ? ''
-          : tok.n === ctx.threshold
-            ? `threshold — ${tok.n} signature${tok.n === 1 ? '' : 's'} required`
-            : `${tok.n} keys in the set`;
+          : keyIndex === 0
+            ? `threshold — ${n} signature${n === 1 ? '' : 's'} required`
+            : `${n} key${n === 1 ? '' : 's'} in the set`;
       } else if (tok.kind === 'op' && tok.op === 'OP_CHECKSIG') {
         cmt = 'final authorisation — one signature';
       } else if (tok.kind === 'op' && tok.op === 'OP_CHECKMULTISIG') {
@@ -234,8 +241,8 @@ export function describeUnlockScript(bytes: Uint8Array): Tail {
   const tail = last && last.kind === 'op' ? last.op : null;
 
   if (tail === 'OP_CHECKMULTISIG' || tail === 'OP_CHECKMULTISIGVERIFY') {
-    const m = tokens[0]?.kind === 'smallnum' ? tokens[0].n : null;
-    const n = tokens[tokens.length - 2]?.kind === 'smallnum' ? (tokens[tokens.length - 2] as Extract<Token, { kind: 'smallnum' }>).n : null;
+    const m = countValue(tokens[0]);
+    const n = countValue(tokens[tokens.length - 2]);
     return {
       kind: 'multisig',
       keys,
